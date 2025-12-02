@@ -89,7 +89,7 @@ def apply_impulse(body: RigidBodyCircle, impulse: Vec2):
 def integrate(body: RigidBodyCircle, dt: float):
     """
     Integrates motion using semi-implicit Euler:
-    - X?Y plane: uses accumulated forces and linear damping.
+    - X-Y plane: uses accumulated forces and linear damping.
     - Z axis: gravity only.
     """
     if body.inv_mass == 0.0 or body.locked:
@@ -117,7 +117,7 @@ def integrate(body: RigidBodyCircle, dt: float):
 
 
 def circle_vs_circle(A: RigidBodyCircle, B: RigidBodyCircle):
-    """Exact circle-circle collision in X?Y."""
+    """Exact circle-circle collision in X-Y."""
     n = B.position - A.position
     dist = n.length()
     r = A.radius + B.radius
