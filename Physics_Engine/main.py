@@ -1,197 +1,157 @@
-# main.py
-import random
 import pygame
-from engine import Vec2, RigidBodyCircle, step, apply_impulse
+from engine import SoftBody, softbody_collision, Vec2
 
-WIDTH, HEIGHT = 800, 600
+pygame.init()
 
-# Light green background
-BG_COLOR = (180, 220, 180)
+WIDTH, HEIGHT = 1000, 700
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Softbody Jelly Demo")
 
-# Default fallback colors (used if a body has no custom color)
-CIRCLE_COLOR = (230, 230, 240)
-BOX_COLOR = (200, 240, 200)
-TRI_COLOR = (240, 200, 200)
+clock = pygame.time.Clock()
 
-# Colors for outlines and aim line
-OUTLINE_COLOR = (20, 20, 20)   # dark outline for shapes
-BORDER_COLOR = (0, 0, 0)       # map border (screen edge)
-AIM_LINE_COLOR = (40, 40, 40)  # dark line to contrast with light background
+# create two soft bodies
+body1 = SoftBody(Vec2(400.0, 300.0), radius=70.0, num_points=20)
+body2 = SoftBody(Vec2(650.0, 300.0), radius=70.0, num_points=20)
+bodies = [body1, body2]
 
-# Scale factor from drag distance to impulse strength
-LAUNCH_IMPULSE_SCALE = 12.0
+# drag state
+dragging = False
+drag_body: SoftBody | None = None
+drag_start_mouse = Vec2(0.0, 0.0)
+drag_start_center = Vec2(0.0, 0.0)
 
-
-def random_pastel_color():
-    """Returns a random soft (pastel-like) RGB color."""
-    r = random.randint(120, 255)
-    g = random.randint(120, 255)
-    b = random.randint(120, 255)
-    return (r, g, b)
+LAUNCH_STRENGTH = 6.0      # throw power
+PICK_RADIUS = 90.0         # how close you must click to grab a body
+MAX_DRAG_DIST = 250.0      # clamp drag length (for power and stability)
 
 
-def create_bodies_random(count=12):
-    """
-    Creates 'count' bodies with:
-    - random positions
-    - random shapes
-    - random colors
-    """
-    bodies = []
-    margin = 60
-    shapes = ["circle", "box", "triangle"]
+def clamp_mouse() -> Vec2:
+    """Return mouse position clamped to the window rectangle."""
+    mx, my = pygame.mouse.get_pos()
+    mx = max(0, min(WIDTH - 1, mx))
+    my = max(0, min(HEIGHT - 1, my))
+    return Vec2(float(mx), float(my))
 
-    for _ in range(count):
-        x = random.uniform(margin, WIDTH - margin)
-        y = random.uniform(margin, HEIGHT - margin)
-        radius = random.randint(18, 26)
-        shape = random.choice(shapes)
-        mass = radius * radius * 0.05
 
-        body = RigidBodyCircle(
-            position=Vec2(x, y),
-            radius=radius,
-            mass=mass,
-            restitution=0.8,
-            shape=shape
+def get_body_center(body: SoftBody) -> Vec2:
+    """Return the current center position of the soft body."""
+    return Vec2(body.particles[0].pos.x, body.particles[0].pos.y)
+
+
+def move_body_to(body: SoftBody, target: Vec2):
+    """Move all particles so that the body's center becomes target."""
+    center = get_body_center(body)
+    delta = target - center
+    for p in body.particles:
+        p.pos.x += delta.x
+        p.pos.y += delta.y
+
+
+def set_body_velocity(body: SoftBody, vel: Vec2):
+    """Set the same velocity to all particles of the body."""
+    for p in body.particles:
+        p.vel.x = vel.x
+        p.vel.y = vel.y
+
+
+running = True
+while running:
+    dt = clock.tick(60) / 1000.0  # delta time in seconds
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        # start dragging on left click
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mouse_pos = clamp_mouse()
+
+            # find body whose center is closest to the mouse
+            for body in bodies:
+                center = get_body_center(body)
+                if (center - mouse_pos).length() <= PICK_RADIUS:
+                    dragging = True
+                    drag_body = body
+                    drag_start_mouse = mouse_pos
+                    drag_start_center = center
+                    set_body_velocity(drag_body, Vec2(0.0, 0.0))
+                    break
+
+        # release mouse → launch
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if dragging and drag_body is not None:
+                # drag vector from current center back to start center
+                current_center = get_body_center(drag_body)
+                drag_vec = drag_start_center - current_center
+
+                # clamp max drag length
+                length = drag_vec.length()
+                if length > MAX_DRAG_DIST:
+                    drag_vec = drag_vec * (MAX_DRAG_DIST / length)
+
+                launch_vel = drag_vec * LAUNCH_STRENGTH
+                set_body_velocity(drag_body, launch_vel)
+
+            dragging = False
+            drag_body = None
+
+    # physics update
+    for body in bodies:
+        if dragging and body is drag_body:
+            continue  # do not integrate while dragging
+        body.update(dt, screen_size=(WIDTH, HEIGHT))
+
+    # soft body vs soft body collision
+    softbody_collision(body1, body2)
+
+    # while dragging, move the body to follow the clamped mouse
+    if dragging and drag_body is not None:
+        mouse_pos = clamp_mouse()
+        # optional: clamp distance from drag_start_center as well
+        drag_vec = mouse_pos - drag_start_center
+        length = drag_vec.length()
+        if length > MAX_DRAG_DIST:
+            drag_vec = drag_vec * (MAX_DRAG_DIST / length)
+        target_pos = drag_start_center + drag_vec
+
+        move_body_to(drag_body, target_pos)
+        set_body_velocity(drag_body, Vec2(0.0, 0.0))
+
+    # rendering
+    screen.fill((200, 255, 200))
+
+    for body in bodies:
+        outer_points = [
+            (int(p.pos.x), int(p.pos.y))
+            for p in body.particles[1:]
+        ]
+
+        if len(outer_points) >= 3:
+            pygame.draw.polygon(screen, (150, 190, 255), outer_points)
+            pygame.draw.polygon(screen, (80, 120, 255), outer_points, width=3)
+
+    # draw drag guide line
+    if dragging and drag_body is not None:
+        current_center = get_body_center(drag_body)
+
+        # line from drag start center to current center
+        pygame.draw.line(
+            screen,
+            (50, 80, 200),
+            (int(drag_start_center.x), int(drag_start_center.y)),
+            (int(current_center.x), int(current_center.y)),
+            width=3
         )
 
-        # Attach a random color to this body (visual only)
-        body.color = random_pastel_color()
+        # small circle at drag start center
+        pygame.draw.circle(
+            screen,
+            (50, 80, 200),
+            (int(drag_start_center.x), int(drag_start_center.y)),
+            6,
+            width=2
+        )
 
-        bodies.append(body)
+    pygame.display.flip()
 
-    return bodies
-
-
-def draw_body(screen, body: RigidBodyCircle):
-    """Renders a body with a fill color and a dark outline."""
-    x = int(body.position.x)
-    y = int(body.position.y)
-    r = int(body.radius)
-
-    # Use per-body color if it exists
-    fill_color = getattr(body, "color", None)
-    if fill_color is None:
-        # Fallback per shape (should not happen if we always set body.color)
-        if body.shape == "circle":
-            fill_color = CIRCLE_COLOR
-        elif body.shape == "box":
-            fill_color = BOX_COLOR
-        elif body.shape == "triangle":
-            fill_color = TRI_COLOR
-        else:
-            fill_color = CIRCLE_COLOR
-
-    if body.shape == "circle":
-        # Filled circle
-        pygame.draw.circle(screen, fill_color, (x, y), r)
-        # Outline
-        pygame.draw.circle(screen, OUTLINE_COLOR, (x, y), r, width=2)
-
-    elif body.shape == "box":
-        rect = pygame.Rect(x - r, y - r, 2 * r, 2 * r)
-        # Filled box (with slightly rounded corners)
-        pygame.draw.rect(screen, fill_color, rect, border_radius=4)
-        # Outline
-        pygame.draw.rect(screen, OUTLINE_COLOR, rect, width=2, border_radius=4)
-
-    elif body.shape == "triangle":
-        points = [
-            (x,     y - r),
-            (x - r, y + r),
-            (x + r, y + r)
-        ]
-        # Filled triangle
-        pygame.draw.polygon(screen, fill_color, points)
-        # Outline
-        pygame.draw.polygon(screen, OUTLINE_COLOR, points, width=2)
-
-    else:
-        # Fallback: circle
-        pygame.draw.circle(screen, fill_color, (x, y), r)
-        pygame.draw.circle(screen, OUTLINE_COLOR, (x, y), r, width=2)
-
-
-def main():
-    pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Physics demo: random shapes on green board")
-    clock = pygame.time.Clock()
-
-    # Random positions, shapes, and colors
-    bodies = create_bodies_random(count=12)
-
-    selected_body = None
-    dragging = False
-    drag_start = None
-    current_mouse = None
-
-    running = True
-    while running:
-        dt = clock.tick(60) / 1000.0
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            # Mouse down: select a body
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = event.pos
-                mouse_pos = Vec2(mx, my)
-                for body in reversed(bodies):
-                    if (body.position - mouse_pos).length() <= body.radius:
-                        selected_body = body
-                        selected_body.locked = True
-                        dragging = True
-                        drag_start = mouse_pos
-                        current_mouse = mouse_pos
-                        break
-
-            # Update drag position
-            if event.type == pygame.MOUSEMOTION and dragging:
-                mx, my = event.pos
-                current_mouse = Vec2(mx, my)
-
-            # Mouse up: apply impulse and release
-            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                if dragging and selected_body is not None and current_mouse is not None:
-                    # Drag vector from mouse to body center
-                    drag_vec = selected_body.position - current_mouse
-                    impulse = drag_vec * LAUNCH_IMPULSE_SCALE
-                    apply_impulse(selected_body, impulse)
-                    selected_body.locked = False
-                dragging = False
-                selected_body = None
-                drag_start = None
-                current_mouse = None
-
-        # Physics update
-        step(bodies, dt, WIDTH, HEIGHT)
-
-        # Rendering
-        screen.fill(BG_COLOR)
-
-        # Map border (screen edge outline)
-        border_rect = pygame.Rect(0, 0, WIDTH - 1, HEIGHT - 1)
-        pygame.draw.rect(screen, BORDER_COLOR, border_rect, width=3)
-
-        # Draw bodies
-        for body in bodies:
-            draw_body(screen, body)
-
-        # Draw aim line while dragging
-        if dragging and selected_body is not None and current_mouse is not None:
-            sx = int(selected_body.position.x)
-            sy = int(selected_body.position.y)
-            ex = int(current_mouse.x)
-            ey = int(current_mouse.y)
-            pygame.draw.line(screen, AIM_LINE_COLOR, (sx, sy), (ex, ey), 2)
-
-        pygame.display.flip()
-
-    pygame.quit()
-
-
-if __name__ == "__main__":
-    main()
+pygame.quit()
