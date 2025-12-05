@@ -1,33 +1,33 @@
-#engine.py
+# engine.py
 import math
 
 # ------------------------------
 # 2D vector
 # ------------------------------
 class Vec2:
-    def __init__(self, x=0.0, y=0.0):
+    def __init__(self, x: float = 0.0, y: float = 0.0):
         self.x = x
         self.y = y
 
-    def __add__(self, other):
+    def __add__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x + other.x, self.y + other.y)
 
-    def __sub__(self, other):
+    def __sub__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x - other.x, self.y - other.y)
 
-    def __mul__(self, s: float):
+    def __mul__(self, s: float) -> "Vec2":
         return Vec2(self.x * s, self.y * s)
 
-    def __truediv__(self, s: float):
+    def __truediv__(self, s: float) -> "Vec2":
         return Vec2(self.x / s, self.y / s)
 
-    def dot(self, other) -> float:
+    def dot(self, other: "Vec2") -> float:
         return self.x * other.x + self.y * other.y
 
     def length(self) -> float:
         return math.sqrt(self.x * self.x + self.y * self.y)
 
-    def normalized(self):
+    def normalized(self) -> "Vec2":
         L = self.length()
         if L == 0.0:
             return Vec2(0.0, 0.0)
@@ -38,10 +38,13 @@ class Vec2:
 # Particle (point mass)
 # ------------------------------
 class Particle:
-    def __init__(self, pos: Vec2, radius=8.0, mass=1.0):
+    def __init__(self, pos: Vec2, radius: float = 8.0, mass: float = 1.0):
+        # position, velocity, accumulated force
         self.pos = Vec2(pos.x, pos.y)
         self.vel = Vec2(0.0, 0.0)
         self.force = Vec2(0.0, 0.0)
+
+        # physical properties
         self.radius = radius
         self.mass = mass
 
@@ -50,14 +53,25 @@ class Particle:
 # Spring between two particles
 # ------------------------------
 class Spring:
-    def __init__(self, i: int, j: int,
-                 rest_length: float,
-                 k: float = 500.0,
-                 damping: float = 2.0):
+    def __init__(
+        self,
+        i: int,
+        j: int,
+        rest_length: float,
+        k: float = 500.0,
+        damping: float = 2.0,
+    ):
+        # indices of the two particles in SoftBody.particles
         self.i = i
         self.j = j
+
+        # rest length of the spring
         self.rest_length = rest_length
+
+        # spring stiffness (Hooke's law)
         self.k = k
+
+        # damping along the spring direction
         self.damping = damping
 
 
@@ -66,29 +80,35 @@ class Spring:
 # center particle + outer ring + springs
 # ------------------------------
 class SoftBody:
-    def __init__(self, center: Vec2,
-                 radius: float = 60.0,
-                 num_points: int = 20):
+    def __init__(
+        self,
+        center: Vec2,
+        radius: float = 60.0,
+        num_points: int = 20,
+    ):
         self.particles: list[Particle] = []
         self.springs: list[Spring] = []
 
-        # indices and rest radii for radial constraints
+        # indices and parameters for ring structure
         self.center_index: int = 0
         self.ring_start: int = 1
         self.num_points: int = num_points
         self.rest_radii: list[float] = []
 
+        # "core" radius used for center-vs-wall collision
         self.core_radius: float = radius * 0.6
 
-        # smaller collision radius to reduce visible gap
+        # smaller collision radii for smoother contact
         center_collision_radius = 6.0
         outer_collision_radius = 4.0
 
-        # 0) center particle
+        # 0) center particle (heavier, acts like a core)
         self.particles.append(
-            Particle(Vec2(center.x, center.y),
-                     radius=center_collision_radius,
-                     mass=2.0)
+            Particle(
+                Vec2(center.x, center.y),
+                radius=center_collision_radius,
+                mass=2.0,
+            )
         )
 
         # 1) outer ring particles
@@ -97,23 +117,25 @@ class SoftBody:
             x = center.x + radius * math.cos(angle)
             y = center.y + radius * math.sin(angle)
 
-            # rest radial distance from center
+            # store rest radial distance from center
             rest_r = (Vec2(x, y) - center).length()
             self.rest_radii.append(rest_r)
 
             self.particles.append(
-                Particle(Vec2(x, y),
-                         radius=outer_collision_radius,
-                         mass=1.0)
+                Particle(
+                    Vec2(x, y),
+                    radius=outer_collision_radius,
+                    mass=1.0,
+                )
             )
 
+        # spring parameters
+        k_struct = 1200.0      # structural spring stiffness (neighbors)
+        k_bend = 600.0         # bending spring stiffness (skip-one)
+        k_center = 1500.0      # center-to-ring springs (acts like internal support)
+        damping = 4.0          # velocity damping along springs
 
-        k_struct = 1200.0      # structural spring stiffness
-        k_bend = 600.0         # bending spring stiffness
-        k_center = 1500.0      # center-to-ring spring stiffness
-        damping = 4.0          # spring damping
-
-        # 2) center <-> each outer particle (acts like pressure)
+        # 2) center <-> each outer particle (radial / "pressure-like" support)
         for n in range(num_points):
             i = self.center_index
             j = self.ring_start + n
@@ -122,7 +144,7 @@ class SoftBody:
             rest = (p_j.pos - p_i.pos).length()
             self.springs.append(Spring(i, j, rest, k_center, damping))
 
-        # 3) outer structural springs (neighbor)
+        # 3) outer structural springs (neighbor connections)
         for n in range(num_points):
             i = self.ring_start + n
             j = self.ring_start + ((n + 1) % num_points)
@@ -131,7 +153,7 @@ class SoftBody:
             rest = (p_j.pos - p_i.pos).length()
             self.springs.append(Spring(i, j, rest, k_struct, damping))
 
-        # 4) outer bending springs (skip one)
+        # 4) outer bending springs (skip one particle)
         for n in range(num_points):
             i = self.ring_start + n
             j = self.ring_start + ((n + 2) % num_points)
@@ -140,18 +162,57 @@ class SoftBody:
             rest = (p_j.pos - p_i.pos).length()
             self.springs.append(Spring(i, j, rest, k_bend, damping))
 
+        # --------------------------------------
+        # Internal pressure (area-based) fields
+        # --------------------------------------
+        # rest_area: polygon area of the outer ring at initialization
+        self.rest_area: float = self.compute_area()
+        # internal_pressure: current normalized pressure value (0 ~ 1+)
+        self.internal_pressure: float = 0.0
+
     # --------------------------
-    # Forces: gravity + damping
+    # Compute polygon area of the outer ring
+    # --------------------------
+    def compute_area(self) -> float:
+        """
+        Compute the polygon area formed by the outer ring particles.
+
+        Uses the shoelace formula on the sequence of outer particles
+        (indices ring_start .. ring_start + num_points - 1).
+        """
+        if self.num_points < 3:
+            return 0.0
+
+        area = 0.0
+        for i in range(self.num_points):
+            a = self.particles[self.ring_start + i].pos
+            b = self.particles[self.ring_start + ((i + 1) % self.num_points)].pos
+            area += a.x * b.y - b.x * a.y
+
+        return abs(area) * 0.5
+
+    # --------------------------
+    # Forces: gravity + global velocity damping
     # --------------------------
     def apply_forces(self, gravity: Vec2, velocity_damping: float):
+        """
+        Initialize per-particle forces with gravity
+        and apply simple velocity damping.
+        """
         for p in self.particles:
+            # reset force to gravity only
             p.force = gravity * p.mass
+            # simple global velocity damping
             p.vel *= velocity_damping
 
     # --------------------------
     # Spring forces (Hooke + damping)
     # --------------------------
     def apply_springs(self):
+        """
+        Apply Hooke's law and spring damping between each pair of
+        particles connected by a Spring.
+        """
         for s in self.springs:
             pa = self.particles[s.i]
             pb = self.particles[s.j]
@@ -159,45 +220,109 @@ class SoftBody:
             d = pb.pos - pa.pos
             L = d.length()
             if L == 0.0:
+                # if they are on the same position, skip
                 continue
 
+            # spring direction (normalized)
             n = d / L
             stretch = L - s.rest_length
 
             # Hooke force
             force_mag = s.k * stretch
 
-            # Spring damping along the direction
+            # spring damping along the direction
             rel_vel = pb.vel - pa.vel
             damping_mag = s.damping * rel_vel.dot(n)
 
+            # total force along the spring direction
             F = n * (force_mag + damping_mag)
 
+            # apply equal and opposite forces
             pa.force += F
             pb.force -= F
+
+    # --------------------------
+    # Internal pressure force (area-based)
+    # --------------------------
+    def apply_internal_pressure(self, k_pressure: float = 2000.0):
+        """
+        Apply an outward force on the outer ring based on the difference
+        between current area and rest_area.
+
+        - If current area < rest_area: pressure becomes positive and pushes
+          outer particles outward from the center.
+        - If current area >= rest_area: no extra pressure is applied.
+
+        k_pressure controls how strong this effect is (tune for stability).
+        """
+        # compute current polygon area of the outer ring
+        current_area = self.compute_area()
+        if self.rest_area <= 0.0:
+            return
+
+        # pressure grows as the shape is squished (area gets smaller)
+        pressure = max(0.0, 1.0 - current_area / self.rest_area)
+        self.internal_pressure = pressure
+
+        if pressure <= 0.0:
+            return
+
+        center = self.particles[self.center_index].pos
+
+        # apply outward force on each outer ring particle
+        for n in range(self.num_points):
+            idx = self.ring_start + n
+            p = self.particles[idx]
+
+            d = p.pos - center
+            L = d.length()
+            if L == 0.0:
+                # if exactly on the center, skip to avoid NaN
+                continue
+
+            dir_vec = d / L
+
+            # outward force proportional to pressure
+            # you can adjust k_pressure for a stronger/weaker balloon effect
+            p.force += dir_vec * (k_pressure * pressure)
 
     # --------------------------
     # Integrate motion (semi-implicit Euler)
     # --------------------------
     def integrate(self, dt: float):
+        """
+        Semi-implicit Euler integration:
+        v_{t+dt} = v_t + a * dt
+        x_{t+dt} = x_t + v_{t+dt} * dt
+        """
         max_speed = 800.0
         for p in self.particles:
+            # acceleration = F / m
             acc = p.force / p.mass
             p.vel += acc * dt
 
-            # clamp velocity to avoid explosion
+            # clamp velocity magnitude to avoid explosion
             speed = p.vel.length()
             if speed > max_speed:
                 p.vel = p.vel * (max_speed / speed)
 
+            # integrate position
             p.pos += p.vel * dt
 
     # --------------------------
-    # Radial constraints: prevent outer points from crossing the center
+    # Radial constraints: keep outer points near their rest radii
     # --------------------------
-    def enforce_radial_constraints(self,
-                                   min_factor: float = 0.5,
-                                   max_factor: float = 1.5):
+    def enforce_radial_constraints(
+        self,
+        min_factor: float = 0.5,
+        max_factor: float = 1.5,
+    ):
+        """
+        Prevent outer ring particles from going too close to the center
+        or too far away, relative to their rest radial distance.
+
+        This keeps the shape roughly circular and prevents inversion.
+        """
         center = self.particles[self.center_index].pos
 
         for n in range(self.num_points):
@@ -213,7 +338,7 @@ class SoftBody:
             d = p.pos - center
             L = d.length()
             if L == 0.0:
-                # if somehow exactly at center, give a default direction
+                # if at center, assign arbitrary direction
                 dir_vec = Vec2(1.0, 0.0)
                 L = 1.0
             else:
@@ -233,18 +358,26 @@ class SoftBody:
                 # remove radial velocity component that pushes further out of range
                 radial_vel = p.vel.dot(dir_vec)
 
-                # if we were inside and moving further in, or outside and moving further out
+                # if we were inside and moving further in, or outside and moving further out,
+                # kill that radial component
                 if (L < min_r and radial_vel < 0.0) or (L > max_r and radial_vel > 0.0):
                     p.vel -= dir_vec * radial_vel
 
     # --------------------------
     # Center-circle vs wall: keeps whole body from entering corners too deep
     # --------------------------
-    def core_wall_limit(self,
-                        width: int,
-                        height: int,
-                        border_thickness: float = 0.0,
-                        restitution: float = 0.2):
+    def core_wall_limit(
+        self,
+        width: int,
+        height: int,
+        border_thickness: float = 0.0,
+        restitution: float = 0.2,
+    ):
+        """
+        Treat the center + core_radius as a single circle and prevent it
+        from penetrating the walls too deeply. If corrected, move all
+        particles together by the same offset.
+        """
         center = self.particles[self.center_index]
 
         left = border_thickness
@@ -285,20 +418,25 @@ class SoftBody:
                 center.vel.y *= -restitution
 
         if moved:
-            # move all particles by the same offset so shape is preserved
+            # move all particles by the same offset so the shape is preserved
             for p in self.particles:
                 p.pos.x += dx
                 p.pos.y += dy
 
-
     # --------------------------
-    # Collision with screen boundaries (with inner border thickness)
+    # Collision with screen boundaries (per-particle)
     # --------------------------
-    def wall_collision(self,
-                       width: int,
-                       height: int,
-                       border_thickness: float = 0.0,
-                       restitution: float = 0.25):
+    def wall_collision(
+        self,
+        width: int,
+        height: int,
+        border_thickness: float = 0.0,
+        restitution: float = 0.25,
+    ):
+        """
+        Per-particle collision against rectangular boundaries.
+        This creates a soft squishy contact when the body hits walls.
+        """
         # inner bounds where particles are allowed to move
         left = border_thickness
         right = width - border_thickness
@@ -333,44 +471,67 @@ class SoftBody:
     # --------------------------
     # Full update step
     # --------------------------
-    def update(self,
-               dt: float,
-               gravity: Vec2 = Vec2(0.0, 500.0),
-               velocity_damping: float = 0.995,
-               screen_size: tuple[int, int] = (800, 600),
-               border_thickness: float = 0.0):
+    def update(
+        self,
+        dt: float,
+        gravity: Vec2 = Vec2(0.0, 500.0),
+        velocity_damping: float = 0.995,
+        screen_size: tuple[int, int] = (800, 600),
+        border_thickness: float = 0.0,
+        pressure_strength: float = 2000.0,
+    ):
+        """
+        Full simulation step for the soft body:
+
+        1) Apply gravity and global velocity damping.
+        2) Apply spring forces.
+        3) Apply area-based internal pressure.
+        4) Integrate particle motion.
+        5) Enforce radial constraints so outer points do not cross the center.
+        6) Per-particle vs wall collision.
+        7) Core-circle vs wall collision to avoid deep corner penetration.
+        """
         self.apply_forces(gravity, velocity_damping)
         self.apply_springs()
+        self.apply_internal_pressure(k_pressure=pressure_strength)
         self.integrate(dt)
 
         # keep outer points from crossing the center (soft shape constraint)
-        self.enforce_radial_constraints(min_factor=0.7,
-                                        max_factor=1.3)
+        self.enforce_radial_constraints(min_factor=0.7, max_factor=1.3)
 
         # per-particle vs wall (soft squish on contact)
-        self.wall_collision(screen_size[0],
-                            screen_size[1],
-                            border_thickness=border_thickness)
+        self.wall_collision(
+            screen_size[0],
+            screen_size[1],
+            border_thickness=border_thickness,
+        )
 
         # center-circle vs wall (prevent extreme corner penetration)
-        self.core_wall_limit(screen_size[0],
-                             screen_size[1],
-                             border_thickness=border_thickness)
-
+        self.core_wall_limit(
+            screen_size[0],
+            screen_size[1],
+            border_thickness=border_thickness,
+        )
 
 
 # ------------------------------
 # Particle-particle collision
 # ------------------------------
-def resolve_particle_collision(pa: Particle,
-                               pb: Particle,
-                               restitution: float = 0.2):
+def resolve_particle_collision(
+    pa: Particle,
+    pb: Particle,
+    restitution: float = 0.2,
+):
+    """
+    Resolve collision between two circular particles using
+    positional correction and impulse-based velocity update.
+    """
     d = pb.pos - pa.pos
     L = d.length()
     min_dist = pa.radius + pb.radius
 
     if L == 0.0:
-        # avoid division by zero
+        # avoid division by zero: choose arbitrary normal
         n = Vec2(1.0, 0.0)
         L = min_dist
     else:
@@ -380,7 +541,7 @@ def resolve_particle_collision(pa: Particle,
     if penetration <= 0.0:
         return
 
-    # positional correction
+    # positional correction (split correction equally)
     correction = n * (penetration * 0.5)
     pa.pos -= correction
     pb.pos += correction
@@ -396,21 +557,29 @@ def resolve_particle_collision(pa: Particle,
     invA = 1.0 / pa.mass
     invB = 1.0 / pb.mass
 
+    # impulse scalar (1D along the normal)
     j = -(1.0 + restitution) * vn / (invA + invB)
     impulse = n * j
 
+    # apply impulse
     pa.vel -= impulse * invA
     pb.vel += impulse * invB
 
 
-def softbody_collision(A: SoftBody, B: SoftBody,
-                       restitution: float = 0.2):
+# ------------------------------
+# Soft body vs soft body collision
+# (bounding-circle approximation)
+# ------------------------------
+def softbody_collision(
+    A: SoftBody,
+    B: SoftBody,
+    restitution: float = 0.2,
+):
     """
     Soft body vs soft body collision using a single bounding circle
     for each body. Position and velocity corrections are applied to
     all particles of each body to keep the shape stable.
     """
-
     # use first particle as center reference
     ca = A.particles[0]
     cb = B.particles[0]
@@ -426,7 +595,7 @@ def softbody_collision(A: SoftBody, B: SoftBody,
         d = p.pos - cb.pos
         rb = max(rb, d.length())
 
-    # small margin to make collision a bit thicker
+    # small margin to make collision a bit thicker, if desired
     margin = 0.0
     ra += margin
     rb += margin
@@ -499,7 +668,7 @@ def softbody_collision(A: SoftBody, B: SoftBody,
     j = -(1.0 + restitution) * vn / (invA + invB)
     impulse = n * j
 
-    # distribute impulse to all particles
+    # distribute impulse to all particles of each body
     for p in A.particles:
         p.vel -= impulse * (1.0 / total_mass_A)
 

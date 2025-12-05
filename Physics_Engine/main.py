@@ -1,4 +1,4 @@
-#main.py
+# main.py
 import pygame
 from engine import SoftBody, softbody_collision, Vec2
 
@@ -12,6 +12,14 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Softbody Jelly Demo")
 
 clock = pygame.time.Clock()
+
+# -------------------------------------------------
+# Color definitions
+# -------------------------------------------------
+BG_COLOR = (0, 0, 0)           # black background
+WALL_COLOR = (255, 255, 255)   # white walls (border)
+BALL_FILL = (120, 120, 120)    # gray inside of the soft body
+BALL_OUTLINE = (255, 255, 255) # white outline for the soft body
 
 # create two soft bodies
 body1 = SoftBody(Vec2(500.0, 350.0), radius=80.0, num_points=20)
@@ -41,6 +49,7 @@ def get_body_center(body: SoftBody) -> Vec2:
     """Return the current center position of the soft body."""
     return Vec2(body.particles[0].pos.x, body.particles[0].pos.y)
 
+
 def get_body_radius(body: SoftBody) -> float:
     """Return approximate radius of the body from center to outer particles."""
     center = get_body_center(body)
@@ -50,18 +59,18 @@ def get_body_radius(body: SoftBody) -> float:
         r = max(r, d.length())
     return r
 
+
 def move_body_to(body: SoftBody, target: Vec2):
     """Move all particles so that the body's center becomes target (clamped to window)."""
     center = get_body_center(body)
     radius = get_body_radius(body)
 
-    # clamp target inside the inner play area (inside the blue border)
+    # clamp target inside the inner play area (inside the border)
     margin = 2.0
     min_x = BORDER_THICKNESS + radius + margin
     max_x = WIDTH - BORDER_THICKNESS - radius - margin
     min_y = BORDER_THICKNESS + radius + margin
     max_y = HEIGHT - BORDER_THICKNESS - radius - margin
-
 
     tx = max(min_x, min(max_x, target.x))
     ty = max(min_y, min(max_y, target.y))
@@ -71,7 +80,6 @@ def move_body_to(body: SoftBody, target: Vec2):
     for p in body.particles:
         p.pos.x += delta.x
         p.pos.y += delta.y
-
 
 
 def set_body_velocity(body: SoftBody, vel: Vec2):
@@ -127,10 +135,11 @@ while running:
     for body in bodies:
         if dragging and body is drag_body:
             continue  # do not integrate while dragging
-        body.update(dt,
-                    screen_size=(WIDTH, HEIGHT),
-                    border_thickness=BORDER_THICKNESS)
-
+        body.update(
+            dt,
+            screen_size=(WIDTH, HEIGHT),
+            border_thickness=BORDER_THICKNESS,
+        )
 
     # soft body vs soft body collision
     softbody_collision(body1, body2)
@@ -148,15 +157,18 @@ while running:
         move_body_to(drag_body, target_pos)
         set_body_velocity(drag_body, Vec2(0.0, 0.0))
 
-    # rendering
-    screen.fill((200, 255, 200))
+    # -------------------------------------------------
+    # Rendering
+    # -------------------------------------------------
+    # fill background with black
+    screen.fill(BG_COLOR)
 
-    # draw outer border (exactly on the window edge)
+    # draw outer border (exactly on the window edge) in white
     pygame.draw.rect(
         screen,
-        (80, 120, 255),
+        WALL_COLOR,
         pygame.Rect(0, 0, WIDTH, HEIGHT),
-        width=BORDER_THICKNESS
+        width=BORDER_THICKNESS,
     )
 
     # draw soft bodies
@@ -167,34 +179,34 @@ while running:
         ]
 
         if len(outer_points) >= 3:
-            # filled jelly
-            pygame.draw.polygon(screen, (150, 190, 255), outer_points)
-            # thicker outline
+            # filled jelly (gray)
+            pygame.draw.polygon(screen, BALL_FILL, outer_points)
+            # outline (white)
             pygame.draw.polygon(
                 screen,
-                (80, 120, 255),
+                BALL_OUTLINE,
                 outer_points,
-                width=5
+                width=5,
             )
 
-    # draw drag guide line
+    # draw drag guide line (also in white for good contrast)
     if dragging and drag_body is not None:
         current_center = get_body_center(drag_body)
 
         pygame.draw.line(
             screen,
-            (50, 80, 200),
+            WALL_COLOR,
             (int(drag_start_center.x), int(drag_start_center.y)),
             (int(current_center.x), int(current_center.y)),
-            width=3
+            width=3,
         )
 
         pygame.draw.circle(
             screen,
-            (50, 80, 200),
+            WALL_COLOR,
             (int(drag_start_center.x), int(drag_start_center.y)),
             6,
-            width=2
+            width=2,
         )
 
     pygame.display.flip()
