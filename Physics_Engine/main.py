@@ -1,17 +1,21 @@
+#main.py
 import pygame
 from engine import SoftBody, softbody_collision, Vec2
 
 pygame.init()
 
-WIDTH, HEIGHT = 1000, 700
+# window size
+WIDTH, HEIGHT = 1200, 800
+BORDER_THICKNESS = 20      # visible border only (physics uses window edge)
+
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Softbody Jelly Demo")
 
 clock = pygame.time.Clock()
 
 # create two soft bodies
-body1 = SoftBody(Vec2(400.0, 300.0), radius=70.0, num_points=20)
-body2 = SoftBody(Vec2(650.0, 300.0), radius=70.0, num_points=20)
+body1 = SoftBody(Vec2(500.0, 350.0), radius=80.0, num_points=20)
+body2 = SoftBody(Vec2(750.0, 350.0), radius=80.0, num_points=20)
 bodies = [body1, body2]
 
 # drag state
@@ -21,7 +25,7 @@ drag_start_mouse = Vec2(0.0, 0.0)
 drag_start_center = Vec2(0.0, 0.0)
 
 LAUNCH_STRENGTH = 6.0      # throw power
-PICK_RADIUS = 90.0         # how close you must click to grab a body
+PICK_RADIUS = 100.0        # how close you must click to grab a body
 MAX_DRAG_DIST = 250.0      # clamp drag length (for power and stability)
 
 
@@ -37,14 +41,37 @@ def get_body_center(body: SoftBody) -> Vec2:
     """Return the current center position of the soft body."""
     return Vec2(body.particles[0].pos.x, body.particles[0].pos.y)
 
+def get_body_radius(body: SoftBody) -> float:
+    """Return approximate radius of the body from center to outer particles."""
+    center = get_body_center(body)
+    r = 0.0
+    for p in body.particles[1:]:
+        d = p.pos - center
+        r = max(r, d.length())
+    return r
 
 def move_body_to(body: SoftBody, target: Vec2):
-    """Move all particles so that the body's center becomes target."""
+    """Move all particles so that the body's center becomes target (clamped to window)."""
     center = get_body_center(body)
-    delta = target - center
+    radius = get_body_radius(body)
+
+    # clamp target inside the inner play area (inside the blue border)
+    margin = 2.0
+    min_x = BORDER_THICKNESS + radius + margin
+    max_x = WIDTH - BORDER_THICKNESS - radius - margin
+    min_y = BORDER_THICKNESS + radius + margin
+    max_y = HEIGHT - BORDER_THICKNESS - radius - margin
+
+
+    tx = max(min_x, min(max_x, target.x))
+    ty = max(min_y, min(max_y, target.y))
+    clamped_target = Vec2(tx, ty)
+
+    delta = clamped_target - center
     for p in body.particles:
         p.pos.x += delta.x
         p.pos.y += delta.y
+
 
 
 def set_body_velocity(body: SoftBody, vel: Vec2):
@@ -80,7 +107,7 @@ while running:
         # release mouse → launch
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             if dragging and drag_body is not None:
-                # drag vector from current center back to start center
+                # body is already clamped inside window by move_body_to
                 current_center = get_body_center(drag_body)
                 drag_vec = drag_start_center - current_center
 
@@ -92,6 +119,7 @@ while running:
                 launch_vel = drag_vec * LAUNCH_STRENGTH
                 set_body_velocity(drag_body, launch_vel)
 
+            # stop dragging state
             dragging = False
             drag_body = None
 
@@ -99,7 +127,10 @@ while running:
     for body in bodies:
         if dragging and body is drag_body:
             continue  # do not integrate while dragging
-        body.update(dt, screen_size=(WIDTH, HEIGHT))
+        body.update(dt,
+                    screen_size=(WIDTH, HEIGHT),
+                    border_thickness=BORDER_THICKNESS)
+
 
     # soft body vs soft body collision
     softbody_collision(body1, body2)
@@ -107,7 +138,7 @@ while running:
     # while dragging, move the body to follow the clamped mouse
     if dragging and drag_body is not None:
         mouse_pos = clamp_mouse()
-        # optional: clamp distance from drag_start_center as well
+
         drag_vec = mouse_pos - drag_start_center
         length = drag_vec.length()
         if length > MAX_DRAG_DIST:
@@ -120,6 +151,15 @@ while running:
     # rendering
     screen.fill((200, 255, 200))
 
+    # draw outer border (exactly on the window edge)
+    pygame.draw.rect(
+        screen,
+        (80, 120, 255),
+        pygame.Rect(0, 0, WIDTH, HEIGHT),
+        width=BORDER_THICKNESS
+    )
+
+    # draw soft bodies
     for body in bodies:
         outer_points = [
             (int(p.pos.x), int(p.pos.y))
@@ -127,14 +167,20 @@ while running:
         ]
 
         if len(outer_points) >= 3:
+            # filled jelly
             pygame.draw.polygon(screen, (150, 190, 255), outer_points)
-            pygame.draw.polygon(screen, (80, 120, 255), outer_points, width=3)
+            # thicker outline
+            pygame.draw.polygon(
+                screen,
+                (80, 120, 255),
+                outer_points,
+                width=5
+            )
 
     # draw drag guide line
     if dragging and drag_body is not None:
         current_center = get_body_center(drag_body)
 
-        # line from drag start center to current center
         pygame.draw.line(
             screen,
             (50, 80, 200),
@@ -143,7 +189,6 @@ while running:
             width=3
         )
 
-        # small circle at drag start center
         pygame.draw.circle(
             screen,
             (50, 80, 200),
