@@ -1,366 +1,473 @@
 # engine.py
+
 import math
+import random
 
 class Vec2:
-    def __init__(self, x=0.0, y=0.0):
+    def __init__(self, x: float = 0.0, y: float = 0.0):
         self.x = float(x)
         self.y = float(y)
-    
-    def __add__(self, other):
+
+    def __add__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x + other.x, self.y + other.y)
-    
-    def __sub__(self, other):
+
+    def __sub__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x - other.x, self.y - other.y)
-    
-    def __mul__(self, scalar: float):
+
+    def __mul__(self, scalar: float) -> "Vec2":
         return Vec2(self.x * scalar, self.y * scalar)
-    
+
     __rmul__ = __mul__
-    
-    def dot(self, other) -> float:
+
+    def __truediv__(self, scalar: float) -> "Vec2":
+        return Vec2(self.x / scalar, self.y / scalar)
+
+    def dot(self, other: "Vec2") -> float:
         return self.x * other.x + self.y * other.y
-    
+
     def length(self) -> float:
         return math.sqrt(self.x * self.x + self.y * self.y)
-    
-    def normalized(self):
+
+    def normalized(self) -> "Vec2":
         l = self.length()
-        if l == 0:
-            return Vec2(0, 0)
+        if l == 0.0:
+            return Vec2(0.0, 0.0)
         return Vec2(self.x / l, self.y / l)
-    
-    def perp(self):
-        """Returns a perpendicular vector (rotated 90 degrees)."""
+
+    def perp(self) -> "Vec2":
         return Vec2(-self.y, self.x)
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
         return f"Vec2({self.x}, {self.y})"
 
+class SoftVertex:
+    def __init__(self, pos: Vec2, mass: float):
+        # Current position
+        self.pos: Vec2 = Vec2(pos.x, pos.y)
+        # Rest (original) position
+        self.original_pos: Vec2 = Vec2(pos.x, pos.y)
+        # Velocity and force
+        self.vel: Vec2 = Vec2(0.0, 0.0)
+        self.force: Vec2 = Vec2(0.0, 0.0)
+        # Local pressure scalar
+        self.pressure: float = 0.0
+        # Mass
+        self.mass: float = mass
+
+    def distance_to(self, other: "SoftVertex") -> float:
+        return (self.pos - other.pos).length()
+
+def polygon_area(vertices: list[SoftVertex]) -> float:
+    n = len(vertices)
+    if n < 3:
+        return 0.0
+
+    area = 0.0
+    for i in range(n):
+        x1, y1 = vertices[i].pos.x, vertices[i].pos.y
+        x2, y2 = vertices[(i + 1) % n].pos.x, vertices[(i + 1) % n].pos.y
+        area += (x1 * y2) - (x2 * y1)
+    return abs(area) * 0.5
+
+
+def polygon_center(vertices: list[SoftVertex]) -> Vec2:
+    n = len(vertices)
+    if n == 0:
+        return Vec2(0.0, 0.0)
+    sx = 0.0
+    sy = 0.0
+    for v in vertices:
+        sx += v.pos.x
+        sy += v.pos.y
+    inv = 1.0 / n
+    return Vec2(sx * inv, sy * inv)
+
+
+def point_at_distance_from_center(center: Vec2, target: Vec2, distance: float) -> Vec2:
+    delta = target - center
+    angle = math.atan2(delta.y, delta.x)
+    x = center.x + distance * math.cos(angle)
+    y = center.y + distance * math.sin(angle)
+    return Vec2(x, y)
+
+
+DAMPING: float = 0.98
+GRAVITY: float = 9.81
+
+RESTITUTION: float = 1.0
+SCALE: float = 100.0 
+
+EXPLOSION_SPEED_THRESHOLD: float = 80.0
+EXPLOSION_CHANCE: float = 0.1
+MIN_EXPLOSION_RADIUS: float = 40.0
+
+MERGE_OVERLAP_RATIO: float = 0.4
+MERGE_CHANCE: float = 0.1
+MERGE_GROWTH_FACTOR: float = 1.05 
+
+GROUND_FRICTION: float = 0.85
+SLEEP_THRESHOLD: float = 0.5
 
 class RigidBodyCircle:
-    def __init__(self, position, radius, mass=1.0, restitution=0.8, shape="circle"):
-        # 2D position and velocity in the X?Y plane (what we render)
-        self.position = position
-        self.velocity = Vec2(0, 0)
-        
-        # Z axis (not rendered yet, used conceptually for gravity)
-        self.z = 0.0
-        self.vz = 0.0
-        
-        # Basic physical properties
-        self.radius = radius
-        self.mass = float(mass)
-        self.inv_mass = 0.0 if mass == 0 else 1.0 / mass
-        self.restitution = restitution
-        
-        # Visual shape: "circle", "box", "triangle"
-        self.shape = shape
-        
-        # If true, body is locked in X?Y (used while dragging)
-        self.locked = False
-        
-        # Accumulated force in X?Y (cleared each frame)
-        self.force_acc = Vec2(0, 0)
+    def __init__(self,
+                 position: Vec2,
+                 radius: float,
+                 mass: float = 1.0,
+                 restitution: float = 0.8,
+                 shape: str = "circle",
+                 resolution: int = 10):
 
+        self.position: Vec2 = Vec2(position.x, position.y)
+        self.velocity: Vec2 = Vec2(0.0, 0.0)
 
-class Contact:
-    def __init__(self, A, B, normal, penetration):
-        self.A = A
-        self.B = B
-        self.normal = normal
-        self.penetration = penetration
+        self.radius: float = radius
+        self.mass: float = float(mass)
+        self.inv_mass: float = 0.0 if mass == 0.0 else 1.0 / mass
+        self.restitution: float = restitution
 
+        self.shape: str = shape
 
-# Global physics parameters
-GRAVITY_Z = -400.0          # Gravity along Z axis
-WALL_RESTITUTION = 0.9      # Restitution for wall bounces
-LINEAR_DAMPING = 0.5        # Linear damping in the plane
-FRICTION_COEFF = 0.5        # Coulomb friction coefficient
-CIRCLE_SEGMENTS = 10        # Segments for approximating circles as polygons
+        self.locked: bool = False
 
+        self.force_acc: Vec2 = Vec2(0.0, 0.0)
 
-def apply_impulse(body: RigidBodyCircle, impulse: Vec2):
-    """Applies an instantaneous impulse to a body (changes velocity)."""
+        self.vertices: list[SoftVertex] = []
+        self.original_center: Vec2 = Vec2(self.position.x, self.position.y)
+        self.area: float = 0.0
+        self.pressure: float = 0.0
+        self.impulse: Vec2 = Vec2(0.0, 0.0)
+
+        self.max_wall_impact_speed: float = 0.0
+        self.exploded: bool = False
+        self.merged: bool = False
+
+        self._init_vertices(resolution)
+
+    def _init_vertices(self, resolution: int) -> None:
+        if resolution < 3:
+            resolution = 3
+
+        vertex_mass = self.mass / float(resolution) if self.mass > 0.0 else 1.0
+        self.vertices.clear()
+
+        cx, cy = self.position.x, self.position.y
+        r = self.radius
+
+        for i in range(resolution):
+            ang = i * 2.0 * math.pi / resolution - math.pi / 2.0
+            x = cx + r * math.cos(ang)
+            y = cy - r * math.sin(ang)
+            v = SoftVertex(Vec2(x, y), vertex_mass)
+            self.vertices.append(v)
+
+        self.area = polygon_area(self.vertices)
+        self.position = polygon_center(self.vertices)
+        self.original_center = Vec2(self.position.x, self.position.y)
+
+def apply_impulse(body: RigidBodyCircle, impulse: Vec2) -> None:
     if body.inv_mass == 0.0:
         return
-    body.velocity = body.velocity + impulse * body.inv_mass
 
+    dv = impulse * body.inv_mass
+    body.velocity = body.velocity + dv
 
-def integrate(body: RigidBodyCircle, dt: float):
-    """
-    Integrates motion using semi-implicit Euler:
-    - X-Y plane: uses accumulated forces and linear damping.
-    - Z axis: gravity only.
-    """
-    if body.inv_mass == 0.0 or body.locked:
+    for v in body.vertices:
+        v.vel = v.vel + dv
+
+def _simulate_soft_circle(body: RigidBodyCircle,
+                          dt: float,
+                          width: int,
+                          height: int) -> None:
+
+    if body.locked or body.inv_mass == 0.0 or body.exploded or body.merged:
         return
-    
-    # X?Y: apply accumulated forces
-    ax = body.force_acc.x * body.inv_mass
-    ay = body.force_acc.y * body.inv_mass
-    a_xy = Vec2(ax, ay)
-    
-    body.velocity = body.velocity + a_xy * dt
-    body.position = body.position + body.velocity * dt
-    
-    # Linear damping (simple friction-like effect in the plane)
-    damping_factor = max(0.0, 1.0 - LINEAR_DAMPING * dt)
-    body.velocity = body.velocity * damping_factor
-    
-    # Z: gravity only (not rendered yet)
-    az = GRAVITY_Z
-    body.vz += az * dt
-    body.z += body.vz * dt
-    
-    # Clear forces
-    body.force_acc = Vec2(0, 0)
 
+    left_wall = 0.0
+    right_wall = float(width)
+    ceiling = 0.0
+    ground = float(height) - 1.0
 
-def circle_vs_circle(A: RigidBodyCircle, B: RigidBodyCircle):
-    """Exact circle-circle collision in X-Y."""
-    n = B.position - A.position
-    dist = n.length()
-    r = A.radius + B.radius
-    
-    if dist >= r:
-        return None
-    
-    if dist == 0:
-        normal = Vec2(1, 0)
-        penetration = r
+    body.force_acc = Vec2(0.0, 0.0)
+    body.impulse = Vec2(0.0, 0.0)
+    body.max_wall_impact_speed = 0.0
+
+    bounce_dir = Vec2(0.0, 0.0)
+    bouncy_count = 0
+
+    for v in body.vertices:
+        v.force = Vec2(0.0, 0.0)
+
+        distance = (body.position - v.pos).length()
+        rest_distance = (body.original_center - v.original_pos).length()
+        if rest_distance == 0.0:
+            rest_distance = 1e-6
+
+        p = 1.0 - (distance / rest_distance)
+        v.pressure = p
+
+        offset_from_center = v.original_pos - body.original_center
+        ideal_pos = body.position + offset_from_center
+
+        pressure_dir_vec = point_at_distance_from_center(
+            body.position, ideal_pos, rest_distance
+        ) - body.position
+
+        direction = ideal_pos - v.pos
+
+        direction = direction + (
+            (pressure_dir_vec * v.pressure) + (pressure_dir_vec * body.pressure)
+        ) * 0.5
+
+        v.force = v.force + direction * dt
+
+        inv_mass = 1.0 / v.mass if v.mass > 0.0 else 0.0
+        acc = v.force * inv_mass
+        v.vel = v.vel + acc * dt
+
+        v.vel = v.vel * DAMPING
+
+        v.vel = v.vel + (direction - v.vel) * 0.2
+
+        v.pos = v.pos + (v.vel * SCALE) * dt
+
+        if v.pos.y > ground:
+            v.pos.y = ground
+
+            v.vel.x *= GROUND_FRICTION
+            if abs(v.vel.x) < SLEEP_THRESHOLD:
+                v.vel.x = 0.0
+
+            if ideal_pos.y > ground and v.vel.y > 0.0:
+                bounce_offset = ideal_pos - v.pos
+
+                bounce_offset.x = 0.0
+
+                bounce_dir = bounce_dir + bounce_offset
+
+                impact_speed = abs(v.vel.y)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
+
+                v.vel.y = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.y > 0.0:
+                    v.vel.y = 0.0
+
+        if v.pos.y < ceiling:
+            v.pos.y = ceiling
+
+            if ideal_pos.y < ceiling and v.vel.y < 0.0:
+                bounce_offset = ideal_pos - v.pos
+
+                bounce_offset.x = 0.0
+
+                bounce_dir = bounce_dir + bounce_offset
+
+                impact_speed = abs(v.vel.y)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
+
+                v.vel.y = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.y < 0.0:
+                    v.vel.y = 0.0
+
+        if v.pos.x < left_wall:
+            v.pos.x = left_wall
+
+            if ideal_pos.x < left_wall and v.vel.x < 0.0:
+                bounce_offset = ideal_pos - v.pos
+
+                bounce_offset.y = 0.0
+
+                bounce_dir = bounce_dir + bounce_offset
+
+                impact_speed = abs(v.vel.x)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
+
+                v.vel.x = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.x < 0.0:
+                    v.vel.x = 0.0
+
+        if v.pos.x > right_wall:
+            v.pos.x = right_wall
+
+            if ideal_pos.x > right_wall and v.vel.x > 0.0:
+                bounce_offset = ideal_pos - v.pos
+
+                bounce_offset.y = 0.0
+
+                bounce_dir = bounce_dir + bounce_offset
+
+                impact_speed = abs(v.vel.x)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
+
+                v.vel.x = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.x > 0.0:
+                    v.vel.x = 0.0
+
+    if body.radius >= MIN_EXPLOSION_RADIUS:
+        if body.max_wall_impact_speed > EXPLOSION_SPEED_THRESHOLD:
+            if random.random() < EXPLOSION_CHANCE:
+                body.exploded = True
+                return 
+
+    if bouncy_count > 0:
+        avg_bounce = bounce_dir * (1.0 / bouncy_count)
+        body.impulse = body.impulse + avg_bounce * RESTITUTION
+
+    impulse_dt = body.impulse * dt
+    if body.mass > 0.0:
+        change_v = impulse_dt * (1.0 / body.mass)
+        body.velocity = body.velocity - change_v
+
+    body.velocity.y += GRAVITY * dt
+
+    body.velocity = body.velocity * DAMPING
+    body.position = body.position + (body.velocity * SCALE) * dt
+
+    n_vertices = len(body.vertices)
+    if n_vertices > 0:
+        per_vertex_impulse = body.impulse * (1.0 / n_vertices) * dt
+        for v in body.vertices:
+            v.vel = v.vel + per_vertex_impulse
+            v.vel.y += GRAVITY * dt
+
+    current_area = polygon_area(body.vertices)
+    if body.area > 0.0:
+        body.pressure = max(0.0, 1.0 - current_area / body.area)
     else:
-        normal = n * (1.0 / dist)
-        penetration = r - dist
-    
-    return Contact(A, B, normal, penetration)
+        body.pressure = 0.0
 
+def _resolve_soft_collision(b1: RigidBodyCircle,
+                            b2: RigidBodyCircle) -> None:
 
-def build_polygon_vertices(body: RigidBodyCircle):
-    """
-    Builds a polygon representation of the body in world space.
-    - circle: approximated by a regular polygon (CIRCLE_SEGMENTS sides)
-    - box: axis-aligned square
-    - triangle: simple upright triangle
-    """
-    cx = body.position.x
-    cy = body.position.y
-    r = body.radius
-    
-    if body.shape == "circle":
-        verts = []
-        for i in range(CIRCLE_SEGMENTS):
-            angle = 2.0 * math.pi * i / CIRCLE_SEGMENTS
-            verts.append(Vec2(cx + r * math.cos(angle),
-                              cy + r * math.sin(angle)))
-        return verts
-    
-    if body.shape == "box":
-        return [
-            Vec2(cx - r, cy - r),
-            Vec2(cx + r, cy - r),
-            Vec2(cx + r, cy + r),
-            Vec2(cx - r, cy + r),
-        ]
-    
-    if body.shape == "triangle":
-        return [
-            Vec2(cx,     cy - r),
-            Vec2(cx - r, cy + r),
-            Vec2(cx + r, cy + r),
-        ]
-    
-    # Fallback: approximate as circle
-    verts = []
-    for i in range(CIRCLE_SEGMENTS):
-        angle = 2.0 * math.pi * i / CIRCLE_SEGMENTS
-        verts.append(Vec2(cx + r * math.cos(angle),
-                          cy + r * math.sin(angle)))
-    return verts
+    r1 = b1.radius
+    r2 = b2.radius
 
+    def handle_vertices(a: RigidBodyCircle, b: RigidBodyCircle, b_radius: float) -> None:
+        for v in a.vertices:
+            delta = v.pos - b.position
+            dist = delta.length()
 
-def project_polygon(axis: Vec2, verts):
-    """Projects polygon vertices onto an axis and returns min/max scalar values."""
-    min_proj = float("inf")
-    max_proj = float("-inf")
-    for v in verts:
-        p = v.dot(axis)
-        if p < min_proj:
-            min_proj = p
-        if p > max_proj:
-            max_proj = p
-    return min_proj, max_proj
+            if dist == 0.0:
+                n = Vec2(1.0, 0.0)
+                dist_eps = 1e-6
+            else:
+                n = delta * (1.0 / dist)
+                dist_eps = dist
 
-
-def overlap_intervals(minA, maxA, minB, maxB):
-    """Returns overlap between two intervals. 0 if they do not overlap."""
-    if maxA < minB or maxB < minA:
-        return 0.0
-    return min(maxA, maxB) - max(minA, minB)
-
-
-def polygon_vs_polygon(A: RigidBodyCircle, B: RigidBodyCircle):
-    """
-    SAT-based collision detection for two convex polygons.
-    Circles are approximated as polygons if needed.
-    """
-    vertsA = build_polygon_vertices(A)
-    vertsB = build_polygon_vertices(B)
-    
-    smallest_overlap = float("inf")
-    smallest_axis = None
-    
-    def test_axes(verts):
-        nonlocal smallest_overlap, smallest_axis
-        count = len(verts)
-        for i in range(count):
-            p1 = verts[i]
-            p2 = verts[(i + 1) % count]
-            edge = p2 - p1
-            axis = edge.perp().normalized()
-            if axis.length() == 0:
+            if dist_eps >= b_radius:
                 continue
-            minA, maxA = project_polygon(axis, vertsA)
-            minB, maxB = project_polygon(axis, vertsB)
-            o = overlap_intervals(minA, maxA, minB, maxB)
-            if o <= 0:
-                return False
-            if o < smallest_overlap:
-                smallest_overlap = o
-                smallest_axis = axis
-        return True
-    
-    # Test axes from both polygons
-    if not test_axes(vertsA):
+
+            penetration = b_radius - dist_eps
+            v.pos = v.pos + n * penetration
+
+            rel_vel = v.vel - b.velocity
+            vel_along_normal = rel_vel.dot(n)
+            if vel_along_normal > 0.0:
+                continue
+
+            inv_mass_v = 0.0 if v.mass == 0.0 else 1.0 / v.mass
+            inv_mass_b = b.inv_mass
+            denom = inv_mass_v + inv_mass_b
+            if denom == 0.0:
+                continue
+
+            e = RESTITUTION
+            j = -(1.0 + e) * vel_along_normal / denom
+            impulse = n * j
+
+            v.vel = v.vel + impulse * inv_mass_v
+            b.velocity = b.velocity - impulse * inv_mass_b
+
+    handle_vertices(b1, b2, r2)
+    handle_vertices(b2, b1, r1)
+
+def _maybe_merge_bodies(b1: RigidBodyCircle,
+                        b2: RigidBodyCircle) -> RigidBodyCircle | None:
+
+    if b1.exploded or b2.exploded or b1.merged or b2.merged:
         return None
-    if not test_axes(vertsB):
+
+    delta = b2.position - b1.position
+    dist = delta.length()
+    if dist == 0.0:
+        dist = 1e-6
+
+    if dist > (b1.radius + b2.radius) * MERGE_OVERLAP_RATIO:
         return None
-    
-    # Ensure normal points from A to B
-    center_dir = B.position - A.position
-    if center_dir.dot(smallest_axis) < 0:
-        smallest_axis = smallest_axis * -1.0
-    
-    return Contact(A, B, smallest_axis, smallest_overlap)
 
+    if random.random() >= MERGE_CHANCE:
+        return None
 
-def find_contact(A: RigidBodyCircle, B: RigidBodyCircle):
-    """
-    Dispatches to the appropriate collision function:
-    - circle-circle: exact
-    - otherwise: polygon SAT (circles approximated as polygons)
-    """
-    if A.shape == "circle" and B.shape == "circle":
-        return circle_vs_circle(A, B)
-    return polygon_vs_polygon(A, B)
+    total_mass = b1.mass + b2.mass
+    if total_mass <= 0.0:
+        total_mass = 1.0
 
+    w1 = b1.mass / total_mass
+    w2 = b2.mass / total_mass
 
-def resolve_collision(contact: Contact):
-    """
-    Resolves collision using impulse-based response with friction:
-    - Normal impulse controls bounce.
-    - Tangent impulse approximates friction.
-    """
-    A = contact.A
-    B = contact.B
-    n = contact.normal
-    
-    # Relative velocity along normal
-    rv = B.velocity - A.velocity
-    vel_along_normal = rv.dot(n)
-    
-    if vel_along_normal > 0:
-        return
-    
-    e = min(A.restitution, B.restitution)
-    
-    inv_mass_sum = A.inv_mass + B.inv_mass
-    if inv_mass_sum == 0:
-        return
-    
-    # Normal impulse
-    j = -(1 + e) * vel_along_normal
-    j /= inv_mass_sum
-    
-    impulse = n * j
-    A.velocity = A.velocity - impulse * A.inv_mass
-    B.velocity = B.velocity + impulse * B.inv_mass
-    
-    # Friction impulse
-    rv = B.velocity - A.velocity
-    tangent = rv - n * rv.dot(n)
-    t_len = tangent.length()
-    if t_len != 0:
-        tangent = tangent * (1.0 / t_len)
-    else:
-        tangent = Vec2(0, 0)
-    
-    jt = -rv.dot(tangent)
-    jt /= inv_mass_sum
-    
-    # Coulomb friction model
-    if abs(jt) > j * FRICTION_COEFF:
-        jt = j * FRICTION_COEFF * (1 if jt > 0 else -1)
-    
-    friction_impulse = tangent * jt
-    A.velocity = A.velocity - friction_impulse * A.inv_mass
-    B.velocity = B.velocity + friction_impulse * B.inv_mass
+    new_pos = (b1.position * w1) + (b2.position * w2)
+    new_vel = (b1.velocity * w1) + (b2.velocity * w2)
 
+    base_radius = math.sqrt(b1.radius * b1.radius + b2.radius * b2.radius)
+    new_radius = base_radius * MERGE_GROWTH_FACTOR
 
-def positional_correction(contact: Contact, percent=0.4, slop=0.01):
-    """Separates overlapping bodies to reduce sinking."""
-    A = contact.A
-    B = contact.B
-    n = contact.normal
-    
-    inv_mass_sum = A.inv_mass + B.inv_mass
-    if inv_mass_sum == 0:
-        return
-    
-    correction_mag = max(contact.penetration - slop, 0.0) * percent / inv_mass_sum
-    correction = n * correction_mag
-    
-    A.position = A.position - correction * A.inv_mass
-    B.position = B.position + correction * B.inv_mass
+    new_resolution = max(len(b1.vertices), len(b2.vertices))
 
+    merged = RigidBodyCircle(
+        position=new_pos,
+        radius=new_radius,
+        mass=total_mass,
+        restitution=(b1.restitution + b2.restitution) * 0.5,
+        shape="circle",
+        resolution=new_resolution,
+    )
+    merged.velocity = new_vel
 
-def handle_bounds(body: RigidBodyCircle, width: int, height: int):
-    """Keeps bodies inside the screen and makes them bounce off borders."""
-    if body.inv_mass == 0.0:
-        return
-    
-    # Left / Right
-    if body.position.x - body.radius < 0:
-        body.position.x = body.radius
-        body.velocity.x *= -WALL_RESTITUTION
-    elif body.position.x + body.radius > width:
-        body.position.x = width - body.radius
-        body.velocity.x *= -WALL_RESTITUTION
-    
-    # Top / Bottom
-    if body.position.y - body.radius < 0:
-        body.position.y = body.radius
-        body.velocity.y *= -WALL_RESTITUTION
-    elif body.position.y + body.radius > height:
-        body.position.y = height - body.radius
-        body.velocity.y *= -WALL_RESTITUTION
+    b1.merged = True
+    b2.merged = True
 
+    return merged
 
-def step(bodies, dt, width, height):
-    """Runs a full physics step on all bodies."""
+def step(bodies: list[RigidBodyCircle],
+         dt: float,
+         width: int,
+         height: int) -> None:
+
     for body in bodies:
-        integrate(body, dt)
-    
-    contacts = []
+        _simulate_soft_circle(body, dt, width, height)
+
     n = len(bodies)
+    merged_bodies: list[RigidBodyCircle] = []
+
     for i in range(n):
         for j in range(i + 1, n):
-            c = find_contact(bodies[i], bodies[j])
-            if c is not None:
-                contacts.append(c)
-    
-    for c in contacts:
-        resolve_collision(c)
-        positional_correction(c)
-    
-    for body in bodies:
-        handle_bounds(body, width, height)
+            if i >= len(bodies) or j >= len(bodies):
+                continue
+
+            b1 = bodies[i]
+            b2 = bodies[j]
+
+            if b1.merged or b2.merged or b1.exploded or b2.exploded:
+                continue
+
+            _resolve_soft_collision(b1, b2)
+
+            merged = _maybe_merge_bodies(b1, b2)
+            if merged is not None:
+                merged_bodies.append(merged)
+
+    if merged_bodies or any(b.merged for b in bodies):
+        remaining = [b for b in bodies if not b.merged]
+        remaining.extend(merged_bodies)
+        bodies[:] = remaining

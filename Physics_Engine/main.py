@@ -1,192 +1,211 @@
 # main.py
+
+import math
 import random
 import pygame
+
 from engine import Vec2, RigidBodyCircle, step, apply_impulse
 
-WIDTH, HEIGHT = 800, 600
 
-# Light green background
-BG_COLOR = (180, 220, 180)
+WIDTH, HEIGHT = 1200, 800
 
-# Default fallback colors (used if a body has no custom color)
-CIRCLE_COLOR = (230, 230, 240)
-BOX_COLOR = (200, 240, 200)
-TRI_COLOR = (240, 200, 200)
+GROUND_Y = HEIGHT - 1
 
-# Colors for outlines and aim line
-OUTLINE_COLOR = (20, 20, 20)   # dark outline for shapes
-BORDER_COLOR = (0, 0, 0)       # map border (screen edge)
-AIM_LINE_COLOR = (40, 40, 40)  # dark line to contrast with light background
+BG_COLOR = (0, 0, 0)               # black background
+WALL_COLOR = (255, 255, 255)       # white walls
+OUTLINE_COLOR = (255, 255, 255)    # white outline for jelly
+FILL_GRAY = (180, 180, 180)        # gray fill
+AIM_LINE_COLOR = (255, 255, 255)   # white aim line
 
-# Scale factor from drag distance to impulse strength
-LAUNCH_IMPULSE_SCALE = 12.0
+TICK = 60
 
 
-def random_pastel_color():
-    """Returns a random soft (pastel-like) RGB color."""
-    r = random.randint(120, 255)
-    g = random.randint(120, 255)
-    b = random.randint(120, 255)
-    return (r, g, b)
+def create_balls() -> list[RigidBodyCircle]:
+    balls: list[RigidBodyCircle] = []
+
+    center_y = HEIGHT * 0.5
+
+    positions = [
+        Vec2(WIDTH * 0.3, center_y),
+        Vec2(WIDTH * 0.5, center_y),
+        Vec2(WIDTH * 0.7, center_y),
+    ]
+
+    for pos in positions:
+        ball = RigidBodyCircle(
+            position=pos,
+            radius=80.0,
+            mass=1.0,
+            restitution=0.9,
+            shape="circle",
+            resolution=10,
+        )
+        balls.append(ball)
+
+    return balls
 
 
-def create_bodies_random(count=12):
-    """
-    Creates 'count' bodies with:
-    - random positions
-    - random shapes
-    - random colors
-    """
-    bodies = []
-    margin = 60
-    shapes = ["circle", "box", "triangle"]
+def spawn_ball_at(balls: list[RigidBodyCircle], pos: Vec2) -> None:
+    ball = RigidBodyCircle(
+        position=pos,
+        radius=80.0,
+        mass=1.0,
+        restitution=0.9,
+        shape="circle",
+        resolution=10,
+    )
+    balls.append(ball)
 
-    for _ in range(count):
-        x = random.uniform(margin, WIDTH - margin)
-        y = random.uniform(margin, HEIGHT - margin)
-        radius = random.randint(18, 26)
-        shape = random.choice(shapes)
-        mass = radius * radius * 0.05
 
-        body = RigidBodyCircle(
-            position=Vec2(x, y),
-            radius=radius,
-            mass=mass,
-            restitution=0.8,
-            shape=shape
+def spawn_explosion_fragments(balls: list[RigidBodyCircle],
+                              center: Vec2,
+                              base_radius: float) -> None:
+    num_fragments = 6
+    fragment_radius = base_radius * 0.3
+    fragment_mass = 0.3
+
+    for _ in range(num_fragments):
+        fragment = RigidBodyCircle(
+            position=center,
+            radius=fragment_radius,
+            mass=fragment_mass,
+            restitution=0.9,
+            shape="circle",
+            resolution=8,
         )
 
-        # Attach a random color to this body (visual only)
-        body.color = random_pastel_color()
+        angle = random.uniform(0.0, 2.0 * math.pi)
+        impulse_strength = 10.0
+        impulse = Vec2(
+            math.cos(angle) * impulse_strength,
+            math.sin(angle) * impulse_strength,
+        )
+        apply_impulse(fragment, impulse)
 
-        bodies.append(body)
-
-    return bodies
-
-
-def draw_body(screen, body: RigidBodyCircle):
-    """Renders a body with a fill color and a dark outline."""
-    x = int(body.position.x)
-    y = int(body.position.y)
-    r = int(body.radius)
-
-    # Use per-body color if it exists
-    fill_color = getattr(body, "color", None)
-    if fill_color is None:
-        # Fallback per shape (should not happen if we always set body.color)
-        if body.shape == "circle":
-            fill_color = CIRCLE_COLOR
-        elif body.shape == "box":
-            fill_color = BOX_COLOR
-        elif body.shape == "triangle":
-            fill_color = TRI_COLOR
-        else:
-            fill_color = CIRCLE_COLOR
-
-    if body.shape == "circle":
-        # Filled circle
-        pygame.draw.circle(screen, fill_color, (x, y), r)
-        # Outline
-        pygame.draw.circle(screen, OUTLINE_COLOR, (x, y), r, width=2)
-
-    elif body.shape == "box":
-        rect = pygame.Rect(x - r, y - r, 2 * r, 2 * r)
-        # Filled box (with slightly rounded corners)
-        pygame.draw.rect(screen, fill_color, rect, border_radius=4)
-        # Outline
-        pygame.draw.rect(screen, OUTLINE_COLOR, rect, width=2, border_radius=4)
-
-    elif body.shape == "triangle":
-        points = [
-            (x,     y - r),
-            (x - r, y + r),
-            (x + r, y + r)
-        ]
-        # Filled triangle
-        pygame.draw.polygon(screen, fill_color, points)
-        # Outline
-        pygame.draw.polygon(screen, OUTLINE_COLOR, points, width=2)
-
-    else:
-        # Fallback: circle
-        pygame.draw.circle(screen, fill_color, (x, y), r)
-        pygame.draw.circle(screen, OUTLINE_COLOR, (x, y), r, width=2)
+        balls.append(fragment)
 
 
-def main():
+def pick_ball(balls: list[RigidBodyCircle], mouse: Vec2) -> RigidBodyCircle | None:
+    for ball in balls:
+        if (ball.position - mouse).length() <= ball.radius:
+            return ball
+    return None
+
+
+def move_ball_to_mouse(ball: RigidBodyCircle, mouse: Vec2) -> None:
+    offset_center = ball.original_center
+
+    for v in ball.vertices:
+        local_offset = v.original_pos - offset_center
+        v.pos = mouse + local_offset
+        v.vel = Vec2(0.0, 0.0)
+
+    ball.position = mouse
+    ball.velocity = Vec2(0.0, 0.0)
+
+
+def draw_ball(screen: pygame.Surface, ball: RigidBodyCircle) -> None:
+    if len(ball.vertices) < 3:
+        return
+
+    points = [(int(v.pos.x), int(v.pos.y)) for v in ball.vertices]
+
+    pygame.draw.polygon(screen, FILL_GRAY, points)
+    pygame.draw.polygon(screen, OUTLINE_COLOR, points, width=2)
+
+
+def main() -> None:
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Physics demo: random shapes on green board")
+    pygame.display.set_caption("Soft-body (jelly) on my rigid engine")
     clock = pygame.time.Clock()
 
-    # Random positions, shapes, and colors
-    bodies = create_bodies_random(count=12)
+    balls: list[RigidBodyCircle] = create_balls()
 
-    selected_body = None
-    dragging = False
-    drag_start = None
-    current_mouse = None
+    mouse_down = False      
+    active_ball: RigidBodyCircle | None = None
+    mouse_pos = Vec2(0.0, 0.0)
 
     running = True
     while running:
-        dt = clock.tick(60) / 1000.0
+        dt = clock.tick(TICK) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
-            # Mouse down: select a body
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
-                mouse_pos = Vec2(mx, my)
-                for body in reversed(bodies):
-                    if (body.position - mouse_pos).length() <= body.radius:
-                        selected_body = body
-                        selected_body.locked = True
-                        dragging = True
-                        drag_start = mouse_pos
-                        current_mouse = mouse_pos
-                        break
+                mouse_pos = Vec2(float(mx), float(my))
 
-            # Update drag position
-            if event.type == pygame.MOUSEMOTION and dragging:
-                mx, my = event.pos
-                current_mouse = Vec2(mx, my)
+                if event.button == 1:
+                    picked = pick_ball(balls, mouse_pos)
+                    if picked is not None:
+                        active_ball = picked
+                        mouse_down = True
 
-            # Mouse up: apply impulse and release
-            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                if dragging and selected_body is not None and current_mouse is not None:
-                    # Drag vector from mouse to body center
-                    drag_vec = selected_body.position - current_mouse
-                    impulse = drag_vec * LAUNCH_IMPULSE_SCALE
-                    apply_impulse(selected_body, impulse)
-                    selected_body.locked = False
-                dragging = False
-                selected_body = None
-                drag_start = None
-                current_mouse = None
+                elif event.button == 3:
+                    spawn_ball_at(balls, mouse_pos)
 
-        # Physics update
-        step(bodies, dt, WIDTH, HEIGHT)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                mouse_down = False
+                active_ball = None
 
-        # Rendering
+            elif event.type == pygame.MOUSEMOTION:
+                if mouse_down:
+                    mx, my = event.pos
+                    mouse_pos = Vec2(float(mx), float(my))
+
+
+        if mouse_down and active_ball is not None:
+            move_ball_to_mouse(active_ball, mouse_pos)
+
+        step(balls, dt, WIDTH, HEIGHT)
+
+        exploded_balls: list[RigidBodyCircle] = [b for b in balls if b.exploded]
+
+        if exploded_balls:
+            for b in exploded_balls:
+                if b in balls:
+                    balls.remove(b)
+                spawn_explosion_fragments(balls, b.position, b.radius)
+
         screen.fill(BG_COLOR)
 
-        # Map border (screen edge outline)
-        border_rect = pygame.Rect(0, 0, WIDTH - 1, HEIGHT - 1)
-        pygame.draw.rect(screen, BORDER_COLOR, border_rect, width=3)
+        pygame.draw.line(
+            screen,
+            WALL_COLOR,
+            (0, GROUND_Y),
+            (WIDTH, GROUND_Y),
+            width=2,
+        )
 
-        # Draw bodies
-        for body in bodies:
-            draw_body(screen, body)
+        pygame.draw.line(
+            screen,
+            WALL_COLOR,
+            (0, 0),
+            (WIDTH, 0),
+            width=2,
+        )
 
-        # Draw aim line while dragging
-        if dragging and selected_body is not None and current_mouse is not None:
-            sx = int(selected_body.position.x)
-            sy = int(selected_body.position.y)
-            ex = int(current_mouse.x)
-            ey = int(current_mouse.y)
-            pygame.draw.line(screen, AIM_LINE_COLOR, (sx, sy), (ex, ey), 2)
+        pygame.draw.line(
+            screen,
+            WALL_COLOR,
+            (0, 0),
+            (0, GROUND_Y),
+            width=2,
+        )
+
+        pygame.draw.line(
+            screen,
+            WALL_COLOR,
+            (WIDTH - 1, 0),
+            (WIDTH - 1, GROUND_Y),
+            width=2,
+        )
+
+        for ball in balls:
+            draw_ball(screen, ball)
 
         pygame.display.flip()
 
