@@ -1,14 +1,19 @@
 # engine.py
+# Soft-body (jelly-like) physics implemented in your rigid engine style.
+# All comments are written in English.
+
 import math
+import random
 
 
-# ------------------------------
-# 2D vector
-# ------------------------------
+# ==========================
+# Basic 2D vector
+# ==========================
+
 class Vec2:
     def __init__(self, x: float = 0.0, y: float = 0.0):
-        self.x = x
-        self.y = y
+        self.x = float(x)
+        self.y = float(y)
 
     def __add__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x + other.x, self.y + other.y)
@@ -16,11 +21,13 @@ class Vec2:
     def __sub__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x - other.x, self.y - other.y)
 
-    def __mul__(self, s: float) -> "Vec2":
-        return Vec2(self.x * s, self.y * s)
+    def __mul__(self, scalar: float) -> "Vec2":
+        return Vec2(self.x * scalar, self.y * scalar)
 
-    def __truediv__(self, s: float) -> "Vec2":
-        return Vec2(self.x / s, self.y / s)
+    __rmul__ = __mul__
+
+    def __truediv__(self, scalar: float) -> "Vec2":
+        return Vec2(self.x / scalar, self.y / scalar)
 
     def dot(self, other: "Vec2") -> float:
         return self.x * other.x + self.y * other.y
@@ -29,625 +36,590 @@ class Vec2:
         return math.sqrt(self.x * self.x + self.y * self.y)
 
     def normalized(self) -> "Vec2":
-        L = self.length()
-        if L == 0.0:
+        l = self.length()
+        if l == 0.0:
             return Vec2(0.0, 0.0)
-        return Vec2(self.x / L, self.y / L)
+        return Vec2(self.x / l, self.y / l)
+
+    def perp(self) -> "Vec2":
+        """Return a perpendicular vector (rotated 90 degrees)."""
+        return Vec2(-self.y, self.x)
+
+    def __repr__(self) -> str:
+        return f"Vec2({self.x}, {self.y})"
 
 
-# ------------------------------
-# Particle (point mass)
-# ------------------------------
-class Particle:
-    def __init__(self, pos: Vec2, radius: float = 8.0, mass: float = 1.0):
-        # position, velocity, accumulated force
-        self.pos = Vec2(pos.x, pos.y)
-        self.vel = Vec2(0.0, 0.0)
-        self.force = Vec2(0.0, 0.0)
+# ==========================
+# Soft-body vertex
+# ==========================
 
-        # physical properties
-        self.radius = radius
-        self.mass = mass
+class SoftVertex:
+    """Single mass point for a jelly body."""
+    def __init__(self, pos: Vec2, mass: float):
+        # Current position
+        self.pos: Vec2 = Vec2(pos.x, pos.y)
+        # Rest (original) position
+        self.original_pos: Vec2 = Vec2(pos.x, pos.y)
+        # Velocity and force
+        self.vel: Vec2 = Vec2(0.0, 0.0)
+        self.force: Vec2 = Vec2(0.0, 0.0)
+        # Local pressure scalar
+        self.pressure: float = 0.0
+        # Mass
+        self.mass: float = mass
 
-
-# ------------------------------
-# Spring between two particles
-# ------------------------------
-class Spring:
-    def __init__(
-        self,
-        i: int,
-        j: int,
-        rest_length: float,
-        k: float = 500.0,
-        damping: float = 2.0,
-    ):
-        # indices of the two particles in SoftBody.particles
-        self.i = i
-        self.j = j
-
-        # rest length of the spring
-        self.rest_length = rest_length
-
-        # spring stiffness (Hooke's law)
-        self.k = k
-
-        # damping along the spring direction
-        self.damping = damping
+    def distance_to(self, other: "SoftVertex") -> float:
+        """Return distance to another vertex."""
+        return (self.pos - other.pos).length()
 
 
-# ------------------------------
-# Soft body (jelly-like object)
-# center particle + outer ring + springs
-# ------------------------------
-class SoftBody:
-    def __init__(
-        self,
-        center: Vec2,
-        radius: float = 60.0,
-        num_points: int = 20,
-        # material parameters (can be customized per instance)
-        k_struct: float = 1200.0,
-        k_bend: float = 600.0,
-        k_center: float = 1500.0,
-        spring_damping: float = 4.0,
-        velocity_damping: float = 0.995,
-        wall_restitution: float = 0.25,
-        collision_restitution: float = 0.2,
-        pressure_strength: float = 2000.0,
-    ):
-        self.particles: list[Particle] = []
-        self.springs: list[Spring] = []
+# ==========================
+# Helper geometry functions
+# ==========================
 
-        # indices and parameters for ring structure
-        self.center_index: int = 0
-        self.ring_start: int = 1
-        self.num_points: int = num_points
-        self.rest_radii: list[float] = []
+def polygon_area(vertices: list[SoftVertex]) -> float:
+    """Compute polygon area using the shoelace formula."""
+    n = len(vertices)
+    if n < 3:
+        return 0.0
 
-        # base core radius (minimum); actual radius will be computed every frame
-        self.core_radius: float = radius * 0.6
+    area = 0.0
+    for i in range(n):
+        x1, y1 = vertices[i].pos.x, vertices[i].pos.y
+        x2, y2 = vertices[(i + 1) % n].pos.x, vertices[(i + 1) % n].pos.y
+        area += (x1 * y2) - (x2 * y1)
+    return abs(area) * 0.5
 
-        # smaller collision radii for smoother contact
-        center_collision_radius = 6.0
-        outer_collision_radius = 4.0
 
-        # store material parameters
-        self.k_struct = k_struct
-        self.k_bend = k_bend
-        self.k_center = k_center
-        self.spring_damping = spring_damping
-        self.velocity_damping = velocity_damping
-        self.wall_restitution = wall_restitution
-        self.collision_restitution = collision_restitution
-        self.pressure_strength = pressure_strength
+def polygon_center(vertices: list[SoftVertex]) -> Vec2:
+    """Compute simple geometric center (average of vertex positions)."""
+    n = len(vertices)
+    if n == 0:
+        return Vec2(0.0, 0.0)
+    sx = 0.0
+    sy = 0.0
+    for v in vertices:
+        sx += v.pos.x
+        sy += v.pos.y
+    inv = 1.0 / n
+    return Vec2(sx * inv, sy * inv)
 
-        # 0) center particle (heavier, acts like a core)
-        self.particles.append(
-            Particle(
-                Vec2(center.x, center.y),
-                radius=center_collision_radius,
-                mass=2.0,
-            )
-        )
 
-        # 1) outer ring particles
-        for n in range(num_points):
-            angle = 2.0 * math.pi * n / num_points
-            x = center.x + radius * math.cos(angle)
-            y = center.y + radius * math.sin(angle)
+def point_at_distance_from_center(center: Vec2, target: Vec2, distance: float) -> Vec2:
+    """Return point from 'center' toward 'target' at a fixed distance."""
+    delta = target - center
+    angle = math.atan2(delta.y, delta.x)
+    x = center.x + distance * math.cos(angle)
+    y = center.y + distance * math.sin(angle)
+    return Vec2(x, y)
 
-            # store rest radial distance from center
-            rest_r = (Vec2(x, y) - center).length()
-            self.rest_radii.append(rest_r)
 
-            self.particles.append(
-                Particle(
-                    Vec2(x, y),
-                    radius=outer_collision_radius,
-                    mass=1.0,
-                )
-            )
+# ==========================
+# Global physics parameters
+# ==========================
 
-        # 2) center <-> each outer particle (radial / "pressure-like" support)
-        for n in range(num_points):
-            i = self.center_index
-            j = self.ring_start + n
-            p_i = self.particles[i]
-            p_j = self.particles[j]
-            rest = (p_j.pos - p_i.pos).length()
-            self.springs.append(
-                Spring(
-                    i,
-                    j,
-                    rest,
-                    k=self.k_center,
-                    damping=self.spring_damping,
-                )
-            )
+DAMPING: float = 0.98       # Velocity damping for both center and vertices
+GRAVITY: float = 9.81       # Gravity used on center and vertices (downwards)
 
-        # 3) outer structural springs (neighbor connections)
-        for n in range(num_points):
-            i = self.ring_start + n
-            j = self.ring_start + ((n + 1) % num_points)
-            p_i = self.particles[i]
-            p_j = self.particles[j]
-            rest = (p_j.pos - p_i.pos).length()
-            self.springs.append(
-                Spring(
-                    i,
-                    j,
-                    rest,
-                    k=self.k_struct,
-                    damping=self.spring_damping,
-                )
-            )
+RESTITUTION: float = 1.0    # Used for wall and ball-ball collisions
+SCALE: float = 100.0        # Scale factor (velocities ¡æ position step)
 
-        # 4) outer bending springs (skip one particle)
-        for n in range(num_points):
-            i = self.ring_start + n
-            j = self.ring_start + ((n + 2) % num_points)
-            p_i = self.particles[i]
-            p_j = self.particles[j]
-            rest = (p_j.pos - p_i.pos).length()
-            self.springs.append(
-                Spring(
-                    i,
-                    j,
-                    rest,
-                    k=self.k_bend,
-                    damping=self.spring_damping,
-                )
-            )
+# Explosion parameters
+EXPLOSION_SPEED_THRESHOLD: float = 80.0   # Threshold of wall impact speed to consider explosion
+EXPLOSION_CHANCE: float = 0.1             # Probability to explode when above threshold
+MIN_EXPLOSION_RADIUS: float = 40.0        # Do not explode very small balls (fragments)
 
-        # --------------------------------------
-        # Internal pressure (area-based) fields
-        # --------------------------------------
-        self.rest_area: float = self.compute_area()
-        self.internal_pressure: float = 0.0
+# Merging parameters
+MERGE_OVERLAP_RATIO: float = 0.4          # How deep two balls must overlap to consider merging
+MERGE_CHANCE: float = 0.1                 # Probability to merge when overlap is deep enough
+MERGE_GROWTH_FACTOR: float = 1.05         # Radius growth factor when two balls merge
 
-    # --------------------------
-    # Compute polygon area of the outer ring
-    # --------------------------
-    def compute_area(self) -> float:
-        """Compute polygon area formed by the outer ring particles."""
-        if self.num_points < 3:
-            return 0.0
+# Ground friction parameters
+GROUND_FRICTION: float = 0.85             # Horizontal friction when touching the ground
+SLEEP_THRESHOLD: float = 0.5              # Velocities below this are snapped to zero
 
-        area = 0.0
-        for i in range(self.num_points):
-            a = self.particles[self.ring_start + i].pos
-            b = self.particles[self.ring_start + ((i + 1) % self.num_points)].pos
-            area += a.x * b.y - b.x * a.y
 
-        return abs(area) * 0.5
+# ==========================
+# Soft-body circle, but in your "RigidBodyCircle" interface
+# ==========================
 
-    # --------------------------
-    # Forces: gravity + global velocity damping
-    # --------------------------
-    def apply_forces(self, gravity: Vec2, velocity_damping: float):
-        """Initialize per-particle forces with gravity and apply velocity damping."""
-        for p in self.particles:
-            p.force = gravity * p.mass
-            p.vel *= velocity_damping
+class RigidBodyCircle:
+    """
+    Soft-body (jelly) circle implemented with multiple vertices,
+    but exposed under the same class name as your rigid engine.
+    """
 
-    # --------------------------
-    # Spring forces (Hooke + damping)
-    # --------------------------
-    def apply_springs(self):
-        """Apply Hooke's law and spring damping for all springs."""
-        for s in self.springs:
-            pa = self.particles[s.i]
-            pb = self.particles[s.j]
+    def __init__(self,
+                 position: Vec2,
+                 radius: float,
+                 mass: float = 1.0,
+                 restitution: float = 0.8,
+                 shape: str = "circle",
+                 resolution: int = 10):
+        # Center of mass (used for picking / dragging)
+        self.position: Vec2 = Vec2(position.x, position.y)
+        self.velocity: Vec2 = Vec2(0.0, 0.0)
 
-            d = pb.pos - pa.pos
-            L = d.length()
-            if L == 0.0:
-                continue
+        # Physical properties
+        self.radius: float = radius
+        self.mass: float = float(mass)
+        self.inv_mass: float = 0.0 if mass == 0.0 else 1.0 / mass
+        self.restitution: float = restitution
 
-            n = d / L
-            stretch = L - s.rest_length
+        # Shape string is kept for compatibility (only "circle" is supported here)
+        self.shape: str = shape
 
-            force_mag = s.k * stretch
-            rel_vel = pb.vel - pa.vel
-            damping_mag = s.damping * rel_vel.dot(n)
+        # Locked flag (used while dragging)
+        self.locked: bool = False
 
-            F = n * (force_mag + damping_mag)
+        # Force accumulator for rigid-style API (not heavily used here)
+        self.force_acc: Vec2 = Vec2(0.0, 0.0)
 
-            pa.force += F
-            pb.force -= F
+        # Soft-body data
+        self.vertices: list[SoftVertex] = []
+        self.original_center: Vec2 = Vec2(self.position.x, self.position.y)
+        self.area: float = 0.0
+        self.pressure: float = 0.0
+        self.impulse: Vec2 = Vec2(0.0, 0.0)
 
-    # --------------------------
-    # Internal pressure force (area-based)
-    # --------------------------
-    def apply_internal_pressure(
-        self,
-        k_pressure: float,
-        area_tolerance: float = 0.03,
-        max_pressure: float = 1.5,
-    ):
-        """
-        Apply outward force on the outer ring based on the difference
-        between current area and rest_area.
-        """
-        current_area = self.compute_area()
-        if self.rest_area <= 0.0:
-            return
+        # Explosion / merging helpers
+        self.max_wall_impact_speed: float = 0.0  # max speed when hitting any wall this frame
+        self.exploded: bool = False             # true when this body should be visually exploded
+        self.merged: bool = False               # true when this body has been merged into another
 
-        ratio = current_area / self.rest_area
+        # Create vertices on a circle around the center
+        self._init_vertices(resolution)
 
-        if abs(1.0 - ratio) < area_tolerance:
-            self.internal_pressure = 0.0
-            return
+    def _init_vertices(self, resolution: int) -> None:
+        """Initialize soft vertices on a circle around the center."""
+        if resolution < 3:
+            resolution = 3
 
-        pressure_raw = 1.0 - ratio
-        if pressure_raw <= 0.0:
-            self.internal_pressure = 0.0
-            return
+        vertex_mass = self.mass / float(resolution) if self.mass > 0.0 else 1.0
+        self.vertices.clear()
 
-        pressure = min(pressure_raw, max_pressure)
-        self.internal_pressure = pressure
+        cx, cy = self.position.x, self.position.y
+        r = self.radius
 
-        center = self.particles[self.center_index].pos
+        for i in range(resolution):
+            ang = i * 2.0 * math.pi / resolution - math.pi / 2.0
+            x = cx + r * math.cos(ang)
+            y = cy - r * math.sin(ang)
+            v = SoftVertex(Vec2(x, y), vertex_mass)
+            self.vertices.append(v)
 
-        for n in range(self.num_points):
-            idx = self.ring_start + n
-            p = self.particles[idx]
+        # Compute rest area and center based on initial configuration
+        self.area = polygon_area(self.vertices)
+        self.position = polygon_center(self.vertices)
+        self.original_center = Vec2(self.position.x, self.position.y)
 
-            d = p.pos - center
-            L = d.length()
-            if L == 0.0:
-                continue
 
-            dir_vec = d / L
+# ==========================
+# External API functions (same names as your rigid engine)
+# ==========================
 
-            rest_r = self.rest_radii[n]
-            if rest_r > 1e-6:
-                radial_ratio = L / rest_r
+def apply_impulse(body: RigidBodyCircle, impulse: Vec2) -> None:
+    """
+    Apply an instantaneous impulse to the body.
+    For soft-body we change both center velocity and each vertex velocity.
+    """
+    if body.inv_mass == 0.0:
+        return
+
+    dv = impulse * body.inv_mass
+    body.velocity = body.velocity + dv
+
+    # Push the same velocity change to all vertices so the shape moves together.
+    for v in body.vertices:
+        v.vel = v.vel + dv
+
+
+# ==========================
+# Soft-body simulation for a single circle
+# ==========================
+
+def _simulate_soft_circle(body: RigidBodyCircle,
+                          dt: float,
+                          width: int,
+                          height: int) -> None:
+    """Core soft-body step based on the example engine, adapted to Vec2."""
+    # Do not simulate locked, massless, exploded, or merged bodies
+    if body.locked or body.inv_mass == 0.0 or body.exploded or body.merged:
+        return
+
+    # Walls (ceiling, ground, left, right)
+    left_wall = 0.0
+    right_wall = float(width)
+    ceiling = 0.0
+    ground = float(height) - 1.0
+
+    # Reset body-level force, impulse and impact speed
+    body.force_acc = Vec2(0.0, 0.0)
+    body.impulse = Vec2(0.0, 0.0)
+    body.max_wall_impact_speed = 0.0
+
+    bounce_dir = Vec2(0.0, 0.0)
+    bouncy_count = 0
+
+    # --- Per-vertex integration ---
+    for v in body.vertices:
+        # Reset per-vertex force
+        v.force = Vec2(0.0, 0.0)
+
+        # Distance from current center and reference distance from original center
+        distance = (body.position - v.pos).length()
+        rest_distance = (body.original_center - v.original_pos).length()
+        if rest_distance == 0.0:
+            rest_distance = 1e-6
+
+        # Local pressure based on stretch/compression
+        p = 1.0 - (distance / rest_distance)
+        v.pressure = p
+
+        # Ideal position if the body kept its rest shape
+        offset_from_center = v.original_pos - body.original_center
+        ideal_pos = body.position + offset_from_center
+
+        # Pressure direction from center toward ideal position at rest distance
+        pressure_dir_vec = point_at_distance_from_center(
+            body.position, ideal_pos, rest_distance
+        ) - body.position
+
+        # Basic direction from current to ideal position
+        direction = ideal_pos - v.pos
+
+        # Combine local and global pressure components
+        direction = direction + (
+            (pressure_dir_vec * v.pressure) + (pressure_dir_vec * body.pressure)
+        ) * 0.5
+
+        # Simple spring-like force
+        v.force = v.force + direction * dt
+
+        # Integrate acceleration and velocity
+        inv_mass = 1.0 / v.mass if v.mass > 0.0 else 0.0
+        acc = v.force * inv_mass
+        v.vel = v.vel + acc * dt
+
+        # Damping
+        v.vel = v.vel * DAMPING
+
+        # Extra smoothing pulling velocity toward "direction"
+        v.vel = v.vel + (direction - v.vel) * 0.2
+
+        # Integrate position
+        v.pos = v.pos + (v.vel * SCALE) * dt
+
+        # -------------------------
+        # Wall collision handling
+        # Track impact speed for explosion logic
+        # -------------------------
+
+        # Ground (normal: (0, -1))
+        if v.pos.y > ground:
+            v.pos.y = ground
+
+            # Apply horizontal ground friction
+            v.vel.x *= GROUND_FRICTION
+            if abs(v.vel.x) < SLEEP_THRESHOLD:
+                v.vel.x = 0.0
+
+            # Only treat this as a bouncing impact if the vertex is actually moving downward
+            if ideal_pos.y > ground and v.vel.y > 0.0:
+                bounce_offset = ideal_pos - v.pos
+
+                # Use only vertical component for bounce (no horizontal impulse from ground)
+                bounce_offset.x = 0.0
+
+                bounce_dir = bounce_dir + bounce_offset
+
+                impact_speed = abs(v.vel.y)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
+
+                v.vel.y = 0.0
+                bouncy_count += 1
             else:
-                radial_ratio = 1.0
+                # If the vertex is already resting or moving upward, stop vertical motion
+                if v.vel.y > 0.0:
+                    v.vel.y = 0.0
 
-            radial_compression = max(0.0, 1.0 - radial_ratio)
-            local_pressure = pressure * (0.5 + radial_compression)
+        # Ceiling (normal: (0, 1))
+        if v.pos.y < ceiling:
+            v.pos.y = ceiling
 
-            p.force += dir_vec * (k_pressure * local_pressure)
+            if ideal_pos.y < ceiling and v.vel.y < 0.0:
+                bounce_offset = ideal_pos - v.pos
 
-    # --------------------------
-    # Integrate motion (semi-implicit Euler)
-    # --------------------------
-    def integrate(self, dt: float):
-        """Integrate velocities and positions using semi-implicit Euler."""
-        max_speed = 800.0
-        for p in self.particles:
-            acc = p.force / p.mass
-            p.vel += acc * dt
+                # Use only vertical component for ceiling bounce
+                bounce_offset.x = 0.0
 
-            speed = p.vel.length()
-            if speed > max_speed:
-                p.vel = p.vel * (max_speed / speed)
+                bounce_dir = bounce_dir + bounce_offset
 
-            p.pos += p.vel * dt
+                impact_speed = abs(v.vel.y)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
 
-    # --------------------------
-    # Radial constraints
-    # --------------------------
-    def enforce_radial_constraints(
-        self,
-        min_factor: float = 0.5,
-        max_factor: float = 1.5,
-    ):
-        """Keep outer ring particles within a band of [min_factor, max_factor] of rest radius."""
-        center = self.particles[self.center_index].pos
-
-        for n in range(self.num_points):
-            idx = self.ring_start + n
-            p = self.particles[idx]
-
-            rest_r = self.rest_radii[n]
-            min_r = rest_r * min_factor
-            max_r = rest_r * max_factor
-
-            d = p.pos - center
-            L = d.length()
-            if L == 0.0:
-                dir_vec = Vec2(1.0, 0.0)
-                L = 1.0
+                v.vel.y = 0.0
+                bouncy_count += 1
             else:
-                dir_vec = d / L
+                if v.vel.y < 0.0:
+                    v.vel.y = 0.0
 
-            target_r = None
+        # Left wall (normal: (1, 0))
+        if v.pos.x < left_wall:
+            v.pos.x = left_wall
 
-            if L < min_r:
-                target_r = min_r
-            elif L > max_r:
-                target_r = max_r
+            if ideal_pos.x < left_wall and v.vel.x < 0.0:
+                bounce_offset = ideal_pos - v.pos
 
-            if target_r is not None:
-                p.pos = center + dir_vec * target_r
+                # Use only horizontal component for left wall bounce
+                bounce_offset.y = 0.0
 
-                radial_vel = p.vel.dot(dir_vec)
-                if (L < min_r and radial_vel < 0.0) or (L > max_r and radial_vel > 0.0):
-                    p.vel -= dir_vec * radial_vel
+                bounce_dir = bounce_dir + bounce_offset
 
-    # --------------------------
-    # Center-circle vs wall (dynamic radius)
-    # --------------------------
-    def core_wall_limit(
-        self,
-        width: int,
-        height: int,
-        border_thickness: float = 0.0,
-    ):
-        """
-        Treat the body as a single circle whose radius is the maximum
-        distance from the center to any outer particle. Move the entire
-        body together to resolve wall penetration. This prevents local
-        dents and also avoids sinking into the floor.
-        """
-        center = self.particles[self.center_index]
+                impact_speed = abs(v.vel.x)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
 
-        # compute current approximate bounding radius
-        max_r = 0.0
-        for p in self.particles[1:]:
-            d = p.pos - center.pos
-            max_r = max(max_r, d.length())
-        # ensure at least core_radius
-        r = max(self.core_radius, max_r)
+                v.vel.x = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.x < 0.0:
+                    v.vel.x = 0.0
 
-        left = border_thickness
-        right = width - border_thickness
-        top = border_thickness
-        bottom = height - border_thickness
+        # Right wall (normal: (-1, 0))
+        if v.pos.x > right_wall:
+            v.pos.x = right_wall
 
-        moved = False
-        dx = 0.0
-        dy = 0.0
+            if ideal_pos.x > right_wall and v.vel.x > 0.0:
+                bounce_offset = ideal_pos - v.pos
 
-        sleep_vel = 20.0
+                # Use only horizontal component for right wall bounce
+                bounce_offset.y = 0.0
 
-        # left wall
-        if center.pos.x - r < left:
-            dx = left + r - center.pos.x
-            moved = True
-            if center.vel.x < 0.0:
-                if abs(center.vel.x) < sleep_vel:
-                    center.vel.x = 0.0
-                else:
-                    center.vel.x *= -self.wall_restitution
+                bounce_dir = bounce_dir + bounce_offset
 
-        # right wall
-        elif center.pos.x + r > right:
-            dx = right - r - center.pos.x
-            moved = True
-            if center.vel.x > 0.0:
-                if abs(center.vel.x) < sleep_vel:
-                    center.vel.x = 0.0
-                else:
-                    center.vel.x *= -self.wall_restitution
+                impact_speed = abs(v.vel.x)
+                if impact_speed > body.max_wall_impact_speed:
+                    body.max_wall_impact_speed = impact_speed
 
-        # top wall
-        if center.pos.y - r < top:
-            dy = top + r - center.pos.y
-            moved = True
-            if center.vel.y < 0.0:
-                if abs(center.vel.y) < sleep_vel:
-                    center.vel.y = 0.0
-                else:
-                    center.vel.y *= -self.wall_restitution
+                v.vel.x = 0.0
+                bouncy_count += 1
+            else:
+                if v.vel.x > 0.0:
+                    v.vel.x = 0.0
 
-        # bottom wall
-        elif center.pos.y + r > bottom:
-            dy = bottom - r - center.pos.y
-            moved = True
-            if center.vel.y > 0.0:
-                if abs(center.vel.y) < sleep_vel:
-                    center.vel.y = 0.0
-                else:
-                    center.vel.y *= -self.wall_restitution
+    # --- Explosion check (big wall hit) ---
+    if body.radius >= MIN_EXPLOSION_RADIUS:
+        if body.max_wall_impact_speed > EXPLOSION_SPEED_THRESHOLD:
+            # Explode with some probability when impact speed is high enough
+            if random.random() < EXPLOSION_CHANCE:
+                body.exploded = True
+                return  # Stop further processing for this body
 
-        if moved:
-            for p in self.particles:
-                p.pos.x += dx
-                p.pos.y += dy
+    # --- Body-level impulse from bouncing vertices ---
+    if bouncy_count > 0:
+        avg_bounce = bounce_dir * (1.0 / bouncy_count)
+        body.impulse = body.impulse + avg_bounce * RESTITUTION
 
-    # --------------------------
-    # Side wall collision per particle (left/right only)
-    # --------------------------
-    def wall_collision(
-        self,
-        width: int,
-        height: int,
-        border_thickness: float = 0.0,
-    ):
-        """
-        Per-particle collision against side walls (left/right).
-        Top/bottom are handled by core_wall_limit().
-        """
-        left = border_thickness
-        right = width - border_thickness
+    # Apply impulse to center velocity
+    impulse_dt = body.impulse * dt
+    if body.mass > 0.0:
+        change_v = impulse_dt * (1.0 / body.mass)
+        body.velocity = body.velocity - change_v
 
-        sleep_vel = 20.0
+    # Apply gravity to center
+    body.velocity.y += GRAVITY * dt
 
-        for p in self.particles:
-            if p.pos.x - p.radius < left:
-                p.pos.x = left + p.radius
-                if p.vel.x < 0.0:
-                    if abs(p.vel.x) < sleep_vel:
-                        p.vel.x = 0.0
-                    else:
-                        p.vel.x *= -self.wall_restitution
+    # Center damping and integration
+    body.velocity = body.velocity * DAMPING
+    body.position = body.position + (body.velocity * SCALE) * dt
 
-            if p.pos.x + p.radius > right:
-                p.pos.x = right - p.radius
-                if p.vel.x > 0.0:
-                    if abs(p.vel.x) < sleep_vel:
-                        p.vel.x = 0.0
-                    else:
-                        p.vel.x *= -self.wall_restitution
+    # Push impulse and gravity back to each vertex (so they follow the center)
+    n_vertices = len(body.vertices)
+    if n_vertices > 0:
+        per_vertex_impulse = body.impulse * (1.0 / n_vertices) * dt
+        for v in body.vertices:
+            v.vel = v.vel + per_vertex_impulse
+            v.vel.y += GRAVITY * dt
 
-    # --------------------------
-    # Full update step
-    # --------------------------
-    def update(
-        self,
-        dt: float,
-        gravity: Vec2 = Vec2(0.0, 500.0),
-        velocity_damping: float | None = None,
-        screen_size: tuple[int, int] = (800, 600),
-        border_thickness: float = 0.0,
-        pressure_strength: float | None = None,
-    ):
-        """
-        Full simulation step:
-
-        1) Forces (gravity + damping)
-        2) Springs
-        3) Internal pressure
-        4) Integrate
-        5) Radial constraints
-        6) Side walls per particle
-        7) Core-circle vs walls (floor/ceiling/side)
-        """
-        vd = self.velocity_damping if velocity_damping is None else velocity_damping
-        ps = self.pressure_strength if pressure_strength is None else pressure_strength
-
-        self.apply_forces(gravity, vd)
-        self.apply_springs()
-        self.apply_internal_pressure(k_pressure=ps)
-        self.integrate(dt)
-
-        self.enforce_radial_constraints(min_factor=0.7, max_factor=1.3)
-        self.wall_collision(
-            screen_size[0],
-            screen_size[1],
-            border_thickness=border_thickness,
-        )
-        self.core_wall_limit(
-            screen_size[0],
-            screen_size[1],
-            border_thickness=border_thickness,
-        )
-
-
-# ------------------------------
-# Particle-particle collision
-# ------------------------------
-def resolve_particle_collision(
-    pa: Particle,
-    pb: Particle,
-    restitution: float = 0.2,
-):
-    """Resolve collision between two circular particles."""
-    d = pb.pos - pa.pos
-    L = d.length()
-    min_dist = pa.radius + pb.radius
-
-    if L == 0.0:
-        n = Vec2(1.0, 0.0)
-        L = min_dist
+    # Update global pressure based on area shrink/stretch
+    current_area = polygon_area(body.vertices)
+    if body.area > 0.0:
+        body.pressure = max(0.0, 1.0 - current_area / body.area)
     else:
-        n = d / L
-
-    penetration = min_dist - L
-    if penetration <= 0.0:
-        return
-
-    correction = n * (penetration * 0.5)
-    pa.pos -= correction
-    pb.pos += correction
-
-    rel_vel = pb.vel - pa.vel
-    vn = rel_vel.dot(n)
-    if vn > 0.0:
-        return
-
-    invA = 1.0 / pa.mass
-    invB = 1.0 / pb.mass
-
-    j = -(1.0 + restitution) * vn / (invA + invB)
-    impulse = n * j
-
-    pa.vel -= impulse * invA
-    pb.vel += impulse * invB
+        body.pressure = 0.0
 
 
-# ------------------------------
-# Soft body vs soft body collision
-# ------------------------------
-def softbody_collision(
-    A: SoftBody,
-    B: SoftBody,
-):
-    """Bounding-circle approximation for soft body vs soft body collision."""
-    ca = A.particles[0]
-    cb = B.particles[0]
+# ==========================
+# Soft body vs soft body (vertex-based) collision
+# ==========================
 
-    ra = 0.0
-    for p in A.particles[1:]:
-        d = p.pos - ca.pos
-        ra = max(ra, d.length())
+def _resolve_soft_collision(b1: RigidBodyCircle,
+                            b2: RigidBodyCircle) -> None:
+    """
+    Resolve soft collision between two jelly bodies.
+    Each vertex of one body collides against the other body approximated
+    as a circle (center + radius).
+    """
 
-    rb = 0.0
-    for p in B.particles[1:]:
-        d = p.pos - cb.pos
-        rb = max(rb, d.length())
+    r1 = b1.radius
+    r2 = b2.radius
 
-    margin = 0.0
-    ra += margin
-    rb += margin
+    def handle_vertices(a: RigidBodyCircle, b: RigidBodyCircle, b_radius: float) -> None:
+        for v in a.vertices:
+            # Vector from b's center to vertex
+            delta = v.pos - b.position
+            dist = delta.length()
 
-    d = cb.pos - ca.pos
-    dist = d.length()
-    min_dist = ra + rb
+            if dist == 0.0:
+                n = Vec2(1.0, 0.0)
+                dist_eps = 1e-6
+            else:
+                n = delta * (1.0 / dist)
+                dist_eps = dist
 
+            # Outside the circle ¡æ no collision
+            if dist_eps >= b_radius:
+                continue
+
+            # Positional correction
+            penetration = b_radius - dist_eps
+            v.pos = v.pos + n * penetration
+
+            # Relative velocity along normal
+            rel_vel = v.vel - b.velocity
+            vel_along_normal = rel_vel.dot(n)
+            if vel_along_normal > 0.0:
+                continue
+
+            inv_mass_v = 0.0 if v.mass == 0.0 else 1.0 / v.mass
+            inv_mass_b = b.inv_mass
+            denom = inv_mass_v + inv_mass_b
+            if denom == 0.0:
+                continue
+
+            e = RESTITUTION
+            j = -(1.0 + e) * vel_along_normal / denom
+            impulse = n * j
+
+            v.vel = v.vel + impulse * inv_mass_v
+            b.velocity = b.velocity - impulse * inv_mass_b
+
+    # Symmetric handling
+    handle_vertices(b1, b2, r2)
+    handle_vertices(b2, b1, r1)
+
+
+# ==========================
+# Merging logic
+# ==========================
+
+def _maybe_merge_bodies(b1: RigidBodyCircle,
+                        b2: RigidBodyCircle) -> RigidBodyCircle | None:
+    """
+    Try to merge two jelly bodies into a single larger one.
+    Returns a new merged body if merge happens, otherwise None.
+    """
+    # Do not merge bodies that are already exploded or merged
+    if b1.exploded or b2.exploded or b1.merged or b2.merged:
+        return None
+
+    # Distance between centers
+    delta = b2.position - b1.position
+    dist = delta.length()
     if dist == 0.0:
-        n = Vec2(1.0, 0.0)
-        dist = min_dist
-    else:
-        n = d * (1.0 / dist)
+        dist = 1e-6
 
-    penetration = min_dist - dist
-    if penetration <= 0.0:
-        return
+    # Check strong overlap
+    if dist > (b1.radius + b2.radius) * MERGE_OVERLAP_RATIO:
+        return None
 
-    correction = n * (penetration * 0.5)
-    for p in A.particles:
-        p.pos -= correction
-    for p in B.particles:
-        p.pos += correction
+    # Random chance to actually merge
+    if random.random() >= MERGE_CHANCE:
+        return None
 
-    def average_velocity(body: SoftBody) -> Vec2:
-        if not body.particles:
-            return Vec2(0.0, 0.0)
-        vx = 0.0
-        vy = 0.0
-        for pp in body.particles:
-            vx += pp.vel.x
-            vy += pp.vel.y
-        inv_count = 1.0 / len(body.particles)
-        return Vec2(vx * inv_count, vy * inv_count)
+    # Compute merged properties
+    total_mass = b1.mass + b2.mass
+    if total_mass <= 0.0:
+        total_mass = 1.0
 
-    va = average_velocity(A)
-    vb = average_velocity(B)
+    w1 = b1.mass / total_mass
+    w2 = b2.mass / total_mass
 
-    rel_vel = vb - va
-    vn = rel_vel.dot(n)
-    if vn > 0.0:
-        return
+    # Mass-weighted center and velocity
+    new_pos = (b1.position * w1) + (b2.position * w2)
+    new_vel = (b1.velocity * w1) + (b2.velocity * w2)
 
-    total_mass_A = sum(p.mass for p in A.particles)
-    total_mass_B = sum(p.mass for p in B.particles)
-    if total_mass_A == 0.0 or total_mass_B == 0.0:
-        return
+    # New radius: combine area-like contribution and grow a bit
+    base_radius = math.sqrt(b1.radius * b1.radius + b2.radius * b2.radius)
+    new_radius = base_radius * MERGE_GROWTH_FACTOR
 
-    invA = 1.0 / total_mass_A
-    invB = 1.0 / total_mass_B
+    # Resolution: keep more detailed one
+    new_resolution = max(len(b1.vertices), len(b2.vertices))
 
-    restitution = min(A.collision_restitution, B.collision_restitution)
-    j = -(1.0 + restitution) * vn / (invA + invB)
-    impulse = n * j
+    merged = RigidBodyCircle(
+        position=new_pos,
+        radius=new_radius,
+        mass=total_mass,
+        restitution=(b1.restitution + b2.restitution) * 0.5,
+        shape="circle",
+        resolution=new_resolution,
+    )
+    merged.velocity = new_vel
 
-    for p in A.particles:
-        p.vel -= impulse * (1.0 / total_mass_A)
-    for p in B.particles:
-        p.vel += impulse * (1.0 / total_mass_B)
+    # Mark originals as merged
+    b1.merged = True
+    b2.merged = True
+
+    return merged
+
+
+# ==========================
+# Global step function (same signature as your rigid engine)
+# ==========================
+
+def step(bodies: list[RigidBodyCircle],
+         dt: float,
+         width: int,
+         height: int) -> None:
+    """
+    Run a full physics step:
+    1) Simulate each soft circle (gravity, walls, internal pressure, explosion check).
+    2) Resolve soft body-body collisions.
+    3) Merge heavily overlapping bodies into one larger body.
+    Note: exploded bodies are not removed here; main loop will handle them.
+    """
+    # 1) Per-body simulation
+    for body in bodies:
+        _simulate_soft_circle(body, dt, width, height)
+
+    # 2) Pairwise collisions and 3) merging
+    n = len(bodies)
+    merged_bodies: list[RigidBodyCircle] = []
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if i >= len(bodies) or j >= len(bodies):
+                continue
+
+            b1 = bodies[i]
+            b2 = bodies[j]
+
+            if b1.merged or b2.merged or b1.exploded or b2.exploded:
+                continue
+
+            # Resolve soft collision (velocity/position correction)
+            _resolve_soft_collision(b1, b2)
+
+            # Try merging if they are deeply overlapping
+            merged = _maybe_merge_bodies(b1, b2)
+            if merged is not None:
+                merged_bodies.append(merged)
+
+    # Remove merged-into bodies and add new merged ones
+    if merged_bodies or any(b.merged for b in bodies):
+        remaining = [b for b in bodies if not b.merged]
+        remaining.extend(merged_bodies)
+        bodies[:] = remaining
