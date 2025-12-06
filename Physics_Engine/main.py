@@ -11,7 +11,6 @@ WIDTH, HEIGHT = 1200, 800
 
 GROUND_Y = HEIGHT - 1
 
-# Colors
 BG_COLOR = (0, 0, 0)               # black background
 WALL_COLOR = (255, 255, 255)       # white walls
 OUTLINE_COLOR = (255, 255, 255)    # white outline for jelly
@@ -66,7 +65,6 @@ def spawn_explosion_fragments(balls: list[RigidBodyCircle],
     fragment_mass = 0.3
 
     for _ in range(num_fragments):
-        # Create fragment at the same center
         fragment = RigidBodyCircle(
             position=center,
             radius=fragment_radius,
@@ -76,7 +74,6 @@ def spawn_explosion_fragments(balls: list[RigidBodyCircle],
             resolution=8,
         )
 
-        # Give a random outward impulse to each fragment
         angle = random.uniform(0.0, 2.0 * math.pi)
         impulse_strength = 10.0
         impulse = Vec2(
